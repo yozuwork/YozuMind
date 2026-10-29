@@ -43,6 +43,9 @@ function Toolbar() { return (<header className="topbar">
           <i className="bi bi-diagram-3" aria-hidden="true"></i><span className="lbl">向右</span>
         </button>
       </div>
+      <button className="icon-btn" id="imageBtn" title="加入圖片，也可以直接貼上" aria-label="加入圖片"><i className="bi bi-image" aria-hidden="true"></i></button>
+      <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp,image/avif" multiple hidden />
+      <button className="icon-btn" id="relationBtn" title="關聯線：依序點選起點與終點" aria-label="新增關聯線"><i className="bi bi-bezier2" aria-hidden="true"></i></button>
       <button className="btn btn-ghost" id="shareBtn" title="分享">
         <span style={{display: "flex", alignItems: "center", gap: 6}}>
           <i className="bi bi-box-arrow-up" aria-hidden="true"></i>

@@ -34,3 +34,14 @@ test('excessive nesting is rejected before importing', () => {
   for(let i=0;i<102;i++) root={text:'branch',children:[root]};
   assert.throws(()=>parseMaps(JSON.stringify({...map,root}),newId));
 });
+
+test('images and relation endpoints survive import with renewed IDs', () => {
+  const source = {...map, images:[{id:'photo',src:'data:image/png;base64,YQ==',x:-20,y:30,w:200,h:100}],relations:[{id:'line',from:'old-child',to:'photo'}]};
+  const restored=parseMaps(serializeMaps([source]),newId)[0];
+  assert.equal(restored.images[0].x,-20);
+  assert.equal(restored.images[0].w/restored.images[0].h,2);
+  assert.equal(restored.relations[0].from,restored.root.children[0].id);
+  assert.equal(restored.relations[0].to,restored.images[0].id);
+  assert.notEqual(restored.images[0].id,'photo');
+  assert.throws(()=>parseMaps(JSON.stringify({...source,images:[{...source.images[0],src:'https://example.com/image.svg'}]}),newId));
+});

@@ -1,4 +1,5 @@
 import { MAX_FILE_BYTES, parseMaps, serializeMaps } from './files.js';
+import { setupCanvasAssets } from './canvas-assets.js';
 
 export function initializeMindMap() {
 const disposers = [];
@@ -27,6 +28,7 @@ const els=new Map();
 const undoS=new Map(), redoS=new Map();
 const mcache=new Map();
 let ready=false;
+let assets=null;
 
 /* ---------------- persistence ---------------- */
 function lsLoad(){ try{ const a=JSON.parse(localStorage.getItem(LS_KEY)||'[]'); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
@@ -104,7 +106,6 @@ function makeMap(sample){
   const now=Date.now();
   return { id:uid('m'), title: sample?'YoZuLife':'未命名心智圖', icon: sample?'circle-half':ICONS[Math.floor(Math.random()*ICONS.length)], layout:'down', root, createdAt:now, updatedAt:now, rev:'' };
 }
-function cloneWithNewIds(n){ return Object.assign({}, n, {id:uid('n'), children:(n.children||[]).map(cloneWithNewIds)}); }
 function sanitize(n){ if(!n||typeof n!=='object') return mkNode(''); n.text=typeof n.text==='string'?n.text:''; n.children=Array.isArray(n.children)?n.children.map(sanitize):[]; if(!n.id) n.id=uid('n'); return n; }
 function countDesc(n){ let c=0; (n.children||[]).forEach(ch=>{ c+=1+countDesc(ch); }); return c; }
 function nextColor(root){
@@ -115,15 +116,16 @@ function nextColor(root){
 function isAncestor(aId, bId){ let i=idx.get(bId); while(i&&i.parent){ if(i.parent.id===aId) return true; i=idx.get(i.parent.id); } return false; }
 
 /* ---------------- undo ---------------- */
-function snapshot(){ const m=cur(); if(!m) return; const s=undoS.get(m.id)||[]; s.push(JSON.stringify(m.root)); if(s.length>80) s.shift(); undoS.set(m.id,s); redoS.set(m.id,[]); }
+function capture(m){ return JSON.stringify({root:m.root,images:m.images||[],relations:m.relations||[]}); }
+function snapshot(){ const m=cur(); if(!m) return; const s=undoS.get(m.id)||[]; s.push(capture(m)); if(s.length>80) s.shift(); undoS.set(m.id,s); redoS.set(m.id,[]); }
 function dropSnapshot(){ const m=cur(); if(!m) return; const s=undoS.get(m.id); if(s) s.pop(); }
 function doUndo(){ step(undoS, redoS); }
 function doRedo(){ step(redoS, undoS); }
 function step(from,to){
   if(store.readOnly) return; const m=cur(); if(!m) return;
   const s=from.get(m.id); if(!s||!s.length) return;
-  const t=to.get(m.id)||[]; t.push(JSON.stringify(m.root)); to.set(m.id,t);
-  m.root=JSON.parse(s.pop());
+  const t=to.get(m.id)||[]; t.push(capture(m)); to.set(m.id,t);
+  Object.assign(m,JSON.parse(s.pop()));
   renderMap(); if(!idx.has(selectedId)) { selectedId=m.root.id; renderMap(); }
   save(m.id);
 }
@@ -171,7 +173,7 @@ function doLayout(){
 function renderMap(){
   const m=cur();
   updateEmpty();
-  if(!m){ for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; hideBar(); return; }
+  if(!m){ for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; hideBar(); assets?.render(); return; }
   buildIndex(); doLayout();
   const alive=new Set();
   for(const [id,info] of idx){
@@ -219,6 +221,7 @@ function drawEdges(){
     });
   }
   edges.innerHTML=out;
+  assets?.render();
 }
 function applyView(){
   world.style.transform=`translate(${view.x}px,${view.y}px) scale(${view.k})`;
@@ -227,7 +230,7 @@ function applyView(){
   canvas.style.backgroundPosition=`${view.x}px ${view.y}px`;
   $('zLabel').textContent=Math.round(view.k*100)+'%';
 }
-function bbox(){ let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity; for(const o of L.values()){ a=Math.min(a,o.x); b=Math.min(b,o.y); c=Math.max(c,o.x+o.w); d=Math.max(d,o.y+o.h);} return {x0:a,y0:b,x1:c,y1:d}; }
+function bbox(){ let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity; for(const o of [...L.values(),...(assets?.boxes()||[])]){ a=Math.min(a,o.x); b=Math.min(b,o.y); c=Math.max(c,o.x+o.w); d=Math.max(d,o.y+o.h);} return {x0:a,y0:b,x1:c,y1:d}; }
 function fit(){
   if(!L.size) return; const bb=bbox(); const cw=canvas.clientWidth, ch=canvas.clientHeight; const pad=isMobile()?32:90;
   const k=clamp(Math.min((cw-pad*2)/Math.max(1,bb.x1-bb.x0),(ch-pad*2)/Math.max(1,bb.y1-bb.y0)), .25, 1);
@@ -311,6 +314,9 @@ function deleteSel(){
   if(!info.parent){ toast('中心主題不能刪除'); return; }
   snapshot();
   const p=info.parent, i=p.children.indexOf(info.node);
+  const removed=new Set();
+  (function collect(node){removed.add(node.id);node.children.forEach(collect);})(info.node);
+  cur().relations=(cur().relations||[]).filter(line=>!removed.has(line.from)&&!removed.has(line.to));
   p.children.splice(i,1);
   selectedId = (p.children[i]||p.children[i-1]||p).id;
   renderMap(); save(currentId);
@@ -573,7 +579,7 @@ listen($('importFile'), 'change', async e=>{
   if(!file || store.readOnly || !ready) return;
   $('importBtn').disabled=true;
   try {
-    if(file.size > MAX_FILE_BYTES) throw new Error('存檔不可超過 5 MB。');
+    if(file.size > MAX_FILE_BYTES) throw new Error('存檔不可超過 25 MB。');
     const imported = parseMaps(await file.text(), uid);
     if(editingId) commitEdit();
     imported.forEach(map=>maps.set(map.id,map));
@@ -655,7 +661,7 @@ listen($('pageMenu'), 'click', e=>{
   const m=maps.get(menuFor); if(!m) return closePops();
   if(b.dataset.m==='rename'){ closePops(); goto(m.id); setTimeout(()=>{ $('title').focus(); $('title').select(); },60); }
   else if(b.dataset.m==='dup'){
-    closePops(); const c=JSON.parse(JSON.stringify(m)); c.id=uid('m'); c.title=(m.title||'未命名心智圖')+' 的副本'; c.root=cloneWithNewIds(c.root);
+    closePops(); const c=parseMaps(JSON.stringify(m),uid)[0]; c.title=(m.title||'未命名心智圖')+' 的副本';
     const last=sortedMaps().pop(); c.createdAt=Math.max(Date.now(), (last?last.createdAt:0)+1); c.rev='';
     maps.set(c.id,c); save(c.id,true); goto(c.id); toast('已建立副本');
   }
@@ -780,7 +786,8 @@ async function init(){
   }
 }
 if(document.fonts && document.fonts.ready){ document.fonts.ready.then(()=>{ mcache.clear(); if(cur()) renderMap(); }); }
+assets=setupCanvasAssets({canvas,world,getMap:cur,getLayout:()=>L,getView:()=>view,uid,snapshot,save,toast,canEdit:()=>!store.readOnly,clearNodeSelection:()=>{if(editingId)commitEdit();selectedId=null;for(const el of els.values())el.classList.remove('sel');hideBar();}});
 init();
 
-return () => { disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
+return () => { assets?.destroy(); disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
 }
