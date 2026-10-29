@@ -184,4 +184,6 @@ kbd{font-family:var(--font);font-size:11px;padding:1px 6px;border-radius:4px;bor
 @media (prefers-reduced-motion: reduce){ .side,.toast,.scrim{transition:none} }
 
 #root{height:100%}
+.file-actions{border-top:1px solid var(--line);padding:8px 0;flex:none}
+.file-actions p{margin:6px 16px 0;font-size:11px;color:var(--side-ink-2)}
 .bi{display:inline-block;line-height:1;flex-shrink:0}

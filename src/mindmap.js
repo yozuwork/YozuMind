@@ -1,3 +1,5 @@
+import { MAX_FILE_BYTES, parseMaps, serializeMaps } from './files.js';
+
 export function initializeMindMap() {
 const disposers = [];
 function listen(target, type, callback, options) { target.addEventListener(type, callback, options); disposers.push(() => target.removeEventListener(type, callback, options)); }
@@ -28,7 +30,17 @@ let ready=false;
 
 /* ---------------- persistence ---------------- */
 function lsLoad(){ try{ const a=JSON.parse(localStorage.getItem(LS_KEY)||'[]'); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
-function lsSaveAll(){ try{ localStorage.setItem(LS_KEY, JSON.stringify([...maps.values()])); }catch(e){} }
+let localSaveFailed = false;
+function lsSaveAll(){
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify([...maps.values()]));
+    localSaveFailed = false; setStatus(); return true;
+  } catch(e) {
+    localSaveFailed = true; setStatus();
+    toast('瀏覽器暫存失敗，請立即匯出存檔，避免關閉後遺失。');
+    return false;
+  }
+}
 
 const pending=new Map(), inflight=new Set(), again=new Set(), myRevs=new Set(), retried=new Set();
 function isBusy(id){ return pending.has(id)||inflight.has(id); }
@@ -74,7 +86,10 @@ function setStatus(){
   dot.className='dotst';
   if(store.mode==='loading'){ t.textContent='載入中…'; return; }
   if(store.readOnly){ t.textContent='唯讀檢視'; return; }
-  if(store.mode==='local'){ t.textContent='只儲存在這個瀏覽器'; return; }
+  if(store.mode==='local'){
+    dot.classList.add(localSaveFailed ? 'busy' : 'ok');
+    t.textContent=localSaveFailed ? '暫存失敗，請匯出存檔' : '已自動暫存於此瀏覽器'; return;
+  }
   if(pending.size||inflight.size){ dot.classList.add('busy'); t.textContent='儲存中…'; }
   else { dot.classList.add('ok'); t.textContent='已同步到雲端'; }
 }
@@ -524,6 +539,9 @@ function renderSidebar(){
     box.appendChild(row);
   }
   $('newBtn').disabled=store.readOnly||!ready;
+  $('importBtn').disabled=store.readOnly||!ready;
+  $('exportBtn').disabled=!cur();
+  $('exportAllBtn').disabled=!maps.size;
 }
 listen($('pages'), 'click', e=>{
   const mb=e.target.closest('[data-more]');
@@ -533,6 +551,46 @@ listen($('pages'), 'click', e=>{
 listen($('pages'), 'keydown', e=>{ if(e.key==='Enter' && e.target.classList.contains('page')) goto(e.target.dataset.id); });
 listen($('search'), 'input', renderSidebar);
 listen($('newBtn'), 'click', ()=>createMap(false));
+
+function exportFile(all) {
+  if(editingId) commitEdit();
+  const selected = all ? sortedMaps() : (cur() ? [cur()] : []);
+  if(!selected.length) return;
+  const blob = new Blob([serializeMaps(selected)], {type:'application/json;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const name = all ? 'YoZuMind-全部備份' : (cur().title || '未命名心智圖');
+  link.download = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g,'_').slice(0,100) + '.json';
+  link.href = url; document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 10000);
+  toast('已匯出 JSON 存檔，可用「匯入」還原。');
+}
+listen($('exportBtn'), 'click', ()=>exportFile(false));
+listen($('exportAllBtn'), 'click', ()=>exportFile(true));
+listen($('importBtn'), 'click', ()=>{ $('importFile').value=''; $('importFile').click(); });
+listen($('importFile'), 'change', async e=>{
+  const file = e.target.files[0];
+  if(!file || store.readOnly || !ready) return;
+  $('importBtn').disabled=true;
+  try {
+    if(file.size > MAX_FILE_BYTES) throw new Error('存檔不可超過 5 MB。');
+    const imported = parseMaps(await file.text(), uid);
+    if(editingId) commitEdit();
+    imported.forEach(map=>maps.set(map.id,map));
+    // Persist the complete batch before displaying it; roll back on quota errors.
+    if(store.mode!=='cloud' && !lsSaveAll()) {
+      imported.forEach(map=>maps.delete(map.id));
+      throw new Error('瀏覽器空間不足，匯入未完成；原有心智圖已保留。');
+    }
+    if(store.mode==='cloud') imported.forEach(map=>save(map.id,true));
+    $('search').value=''; goto(imported[0].id);
+    toast(`已匯入 ${imported.length} 張心智圖，原有資料已保留。`);
+  } catch(error) {
+    toast(error instanceof SyntaxError ? 'JSON 格式錯誤，請選擇完整的存檔。' : (error.message || '無法讀取存檔，請重試。'));
+  } finally {
+    $('importFile').value=''; renderSidebar();
+  }
+});
 
 function createMap(sample){
   if(store.readOnly||!ready) return;

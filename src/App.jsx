@@ -19,6 +19,13 @@ function Sidebar() { return (<aside className="side" id="side" aria-label="心�
     </button>
     <div className="sec"><span>心智圖</span><span id="count"></span></div>
     <div className="pages" id="pages"></div>
+    <div className="file-actions" aria-label="檔案管理">
+      <button className="side-act" id="importBtn"><i className="bi bi-folder2-open" aria-hidden="true"></i>匯入 JSON 存檔</button>
+      <button className="side-act" id="exportBtn"><i className="bi bi-download" aria-hidden="true"></i>匯出目前心智圖</button>
+      <button className="side-act" id="exportAllBtn"><i className="bi bi-archive" aria-hidden="true"></i>備份全部心智圖</button>
+      <input id="importFile" type="file" accept=".json,application/json" hidden />
+      <p>編輯自動暫存於此瀏覽器</p>
+    </div>
     <div className="side-foot"><span className="dotst" id="stDot"></span><span id="stText">載入中…</span></div>
   </aside>); }
 function Toolbar() { return (<header className="topbar">
