@@ -3,5 +3,8 @@ import { createRoot } from 'react-dom/client';
 import 'bootstrap-icons/font/bootstrap-icons.css';
 import './styles.css';
 import App from './App.jsx';
+import { loadTheme } from './theme.js';
+
+document.documentElement.dataset.theme = loadTheme();
 
 createRoot(document.getElementById('root')).render(<App />);

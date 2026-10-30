@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { initializeMindMap } from './mindmap.js';
+import { RAIL_TOOLS } from './cards.js';
 
 function Sidebar() { return (<aside className="side" id="side" aria-label="心智圖列表">
     <div className="ws">
@@ -17,6 +18,10 @@ function Sidebar() { return (<aside className="side" id="side" aria-label="心�
       <i className="bi bi-plus-lg" aria-hidden="true"></i>
       新增心智圖
     </button>
+    <button className="side-act" id="newFolderBtn">
+      <i className="bi bi-folder-plus" aria-hidden="true"></i>
+      新增資料夾
+    </button>
     <div className="sec"><span>心智圖</span><span id="count"></span></div>
     <div className="pages" id="pages"></div>
     <div className="file-actions" aria-label="檔案管理">
@@ -32,7 +37,7 @@ function Toolbar() { return (<header className="topbar">
       <button className="icon-btn" id="openSide" title="打開側欄" aria-label="打開側欄">
         <i className="bi bi-list" aria-hidden="true"></i>
       </button>
-      <button className="crumb-icon" id="crumbIcon" title="更換圖示" aria-label="更換圖示"><i className="bi bi-diagram-3" aria-hidden="true"></i></button>
+      <button className="crumb-icon" id="crumbIcon" title="更換便利貼顏色" aria-label="更換便利貼顏色"></button>
       <input className="title-input" id="title" type="text" placeholder="未命名心智圖" aria-label="心智圖名稱" />
       <span className="ro-badge" id="roBadge" hidden>唯讀</span>
       <div className="seg" role="group" aria-label="排列方向">
@@ -45,7 +50,7 @@ function Toolbar() { return (<header className="topbar">
       </div>
       <button className="icon-btn" id="imageBtn" title="加入圖片，也可以直接貼上" aria-label="加入圖片"><i className="bi bi-image" aria-hidden="true"></i></button>
       <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp,image/avif" multiple hidden />
-      <button className="icon-btn" id="relationBtn" title="關聯線：依序點選起點與終點" aria-label="新增關聯線"><i className="bi bi-bezier2" aria-hidden="true"></i></button>
+      <button className="icon-btn" id="themeBtn" title="切換色系" aria-label="切換色系"><i className="bi bi-moon-stars" aria-hidden="true"></i></button>
       <button className="btn btn-ghost" id="shareBtn" title="分享">
         <span style={{display: "flex", alignItems: "center", gap: 6}}>
           <i className="bi bi-box-arrow-up" aria-hidden="true"></i>
@@ -53,6 +58,19 @@ function Toolbar() { return (<header className="topbar">
         </span>
       </button>
     </header>); }
+function ToolRail() { return (<nav className="toolrail" id="toolrail" aria-label="卡片工具">
+      {RAIL_TOOLS.map(([type, label, icon]) => (
+        <button className="rail-tool" data-tool={type} key={type} title={`${label}：點一下新增，或拖曳到畫布、欄位`}>
+          <span className="rail-icon" dangerouslySetInnerHTML={{ __html: icon }}></span>
+          <span className="rail-label">{label}</span>
+        </button>
+      ))}
+      <span className="rail-sep" aria-hidden="true"></span>
+      <button className="rail-tool" id="relationBtn" title="關聯線：從物件拖到目標，或點選後選擇線型">
+        <span className="rail-icon"></span>
+        <span className="rail-label">關聯線</span>
+      </button>
+    </nav>); }
 function Canvas() { return (<div className="canvas" id="canvas" tabIndex="0" aria-label="心智圖畫布">
       <div className="world" id="world"><svg id="edges" width="1" height="1"></svg></div>
 
@@ -106,16 +124,25 @@ export default function App() {
   <main className="main">
     <Toolbar />
 
-    <Canvas />
+    <div className="board">
+      <ToolRail />
+      <Canvas />
+    </div>
   </main>
 </div>
 
 <div className="pop" id="pageMenu" role="menu">
   <button className="mi" data-m="rename"><i className="bi bi-pencil" aria-hidden="true"></i>重新命名</button>
+  <button className="mi" data-m="move"><i className="bi bi-folder-symlink" aria-hidden="true"></i>移到資料夾</button>
   <button className="mi" data-m="dup"><i className="bi bi-copy" aria-hidden="true"></i>建立副本</button>
   <button className="mi danger" data-m="del"><i className="bi bi-trash" aria-hidden="true"></i>刪除</button>
 </div>
-<div className="pop" id="iconPop"><div className="icon-grid" id="iconGrid"></div></div>
+<div className="pop" id="folderMenu" role="menu">
+  <button className="mi" data-f="rename"><i className="bi bi-pencil" aria-hidden="true"></i>重新命名</button>
+  <button className="mi danger" data-f="del"><i className="bi bi-trash" aria-hidden="true"></i>刪除資料夾</button>
+</div>
+<div className="pop" id="movePop" role="menu"></div>
+<div className="pop" id="iconPop"><div className="icon-grid color-grid" id="iconGrid"></div></div>
 <div className="pop share-pop" id="sharePop">
   <h3>分享這張心智圖</h3>
   <p id="shareText"></p>
