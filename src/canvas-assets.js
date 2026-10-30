@@ -9,7 +9,7 @@ export async function readImageFile(file) {
   return {src:buffer.toDataURL('image/webp',.82),width:buffer.width,height:buffer.height};
 }
 
-export function setupCanvasAssets({ canvas, world, getMap, getView, uid, snapshot, save, toast, canEdit, clearNodeSelection, onChange, hoverDrop, dropImage }) {
+export function setupCanvasAssets({ canvas, world, getMap, getView, uid, snapshot, save, toast, canEdit, clearNodeSelection, onChange, hoverDrop, dropImage, nextZ }) {
   const listeners = [];
   const on = (target, name, fn, options) => { target.addEventListener(name, fn, options); listeners.push(() => target.removeEventListener(name, fn, options)); };
   const layer = document.createElement('div'); layer.className = 'image-layer'; world.append(layer);
@@ -28,7 +28,7 @@ export function setupCanvasAssets({ canvas, world, getMap, getView, uid, snapsho
     if(selected && !(map.images||[]).some(item=>item.id===selected)) selected=null;
     for(const image of map.images||[]) {
       const frame=document.createElement('div');frame.className='canvas-image'+(selected===image.id?' selected':'')+(drag?.changed&&!drag.corner&&drag.id===image.id?' dragging':'');frame.dataset.id=image.id;
-      Object.assign(frame.style,{left:image.x+'px',top:image.y+'px',width:image.w+'px',height:image.h+'px'});
+      Object.assign(frame.style,{left:image.x+'px',top:image.y+'px',width:image.w+'px',height:image.h+'px',zIndex:1+(image.z||0)});
       const img=document.createElement('img');img.src=image.src;img.alt='畫布圖片';img.draggable=false;frame.append(img);
       if(selected===image.id) for(const corner of ['nw','ne','sw','se']) {
         const handle=document.createElement('button');handle.className='image-handle '+corner;handle.dataset.corner=corner;handle.setAttribute('aria-label','等比例調整圖片大小');frame.append(handle);
@@ -60,7 +60,7 @@ export function setupCanvasAssets({ canvas, world, getMap, getView, uid, snapsho
     const image=getMap().images.find(i=>i.id===drag.id);if(!image)return;
     const p=point(e),dx=p.x-drag.start.x,dy=p.y-drag.start.y,o=drag.original;
     if(!drag.changed&&Math.hypot(dx,dy)<2)return;
-    if(!drag.changed){snapshot();drag.changed=true;}
+    if(!drag.changed){snapshot();drag.changed=true;image.z=nextZ();}
     if(drag.corner){
       const sx=drag.corner.includes('w')?-1:1,sy=drag.corner.includes('n')?-1:1;
       const scale=Math.max(48/Math.max(o.w,o.h),Math.min(4000/o.w,4000/o.h,1+(sx*dx*o.w+sy*dy*o.h)/(o.w*o.w+o.h*o.h)));
@@ -93,7 +93,7 @@ export function setupCanvasAssets({ canvas, world, getMap, getView, uid, snapsho
         if(getMap()?.id!==mapId)continue;
         const v=getView(),w=Math.min(360,width),h=w*height/width;
         const image={id:uid('img'),src,x:(canvas.clientWidth/2-v.x)/v.k-w/2,y:(canvas.clientHeight/2-v.y)/v.k-h/2,w,h};
-        snapshot();map.images ||= [];map.images.push(image);clearNodeSelection();selected=image.id;save(map.id);render();
+        snapshot();image.z=nextZ();map.images ||= [];map.images.push(image);clearNodeSelection();selected=image.id;save(map.id);render();
         toast('圖片已加入，可拖曳移動、拉動四角縮放，或拖進欄位。');
       }catch(error){toast(error.message);}
     }

@@ -1,7 +1,8 @@
 import { MAX_FILE_BYTES, parseFolders, parseMaps, serializeMaps } from './files.js';
 import { setupCanvasAssets } from './canvas-assets.js';
-import { setupCards, stickyIcon, NOTE_COLORS, FOLDER_ICON } from './cards.js';
+import { setupCards, stickyIcon, NOTE_COLORS, folderIcon, FOLDER_COLORS } from './cards.js';
 import { setupRelations } from './relations.js';
+import { setupDraw } from './draw.js';
 import { applyTheme } from './theme.js';
 
 export function initializeMindMap() {
@@ -30,7 +31,7 @@ const els=new Map();
 const undoS=new Map(), redoS=new Map();
 const mcache=new Map();
 let ready=false;
-let assets=null, cards=null, relations=null;
+let assets=null, cards=null, relations=null, draw=null;
 
 /* ---------------- persistence ---------------- */
 function lsLoad(){ try{ const a=JSON.parse(localStorage.getItem(LS_KEY)||'[]'); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
@@ -46,7 +47,14 @@ function lsSaveAll(){
   }
 }
 
-function cleanFolders(list){ return (Array.isArray(list)?list:[]).filter(f=>f&&typeof f.id==='string'&&typeof f.name==='string').map(f=>({id:f.id,name:f.name,open:f.open!==false,createdAt:+f.createdAt||0})); }
+// Folders may nest via parentId; missing parents and cycles fall back to the top level.
+function cleanFolders(list){
+  const out=(Array.isArray(list)?list:[]).filter(f=>f&&typeof f.id==='string'&&typeof f.name==='string').map(f=>({id:f.id,name:f.name,open:f.open!==false,createdAt:+f.createdAt||0,
+    ...(typeof f.parentId==='string'?{parentId:f.parentId}:{}), ...(FOLDER_COLORS[f.color]?{color:f.color}:{})}));
+  const byId=new Map(out.map(f=>[f.id,f]));
+  for(const f of out){ const seen=new Set([f.id]); for(let p=f.parentId; p; p=byId.get(p).parentId){ if(!byId.has(p)||seen.has(p)){ delete f.parentId; break; } seen.add(p); } }
+  return out;
+}
 async function saveFolders(){
   if(store.readOnly) return;
   if(store.mode==='cloud'){ try{ await store.db.doc('maps/'+FOLDER_DOC).set({folders:JSON.parse(JSON.stringify(folders))}); }catch(e){ writeError(e); } return; }
@@ -147,7 +155,7 @@ function nextColor(root){
 function isAncestor(aId, bId){ let i=idx.get(bId); while(i&&i.parent){ if(i.parent.id===aId) return true; i=idx.get(i.parent.id); } return false; }
 
 /* ---------------- undo ---------------- */
-function capture(m){ return JSON.stringify({root:m.root,trees:m.trees||[],rootX:m.rootX||0,rootY:m.rootY||0,images:m.images||[],relations:m.relations||[],cards:m.cards||[]}); }
+function capture(m){ return JSON.stringify({root:m.root,trees:m.trees||[],rootX:m.rootX||0,rootY:m.rootY||0,images:m.images||[],relations:m.relations||[],cards:m.cards||[],strokes:m.strokes||[]}); }
 function snapshot(){ const m=cur(); if(!m) return; const s=undoS.get(m.id)||[]; s.push(capture(m)); if(s.length>80) s.shift(); undoS.set(m.id,s); redoS.set(m.id,[]); }
 function dropSnapshot(){ const m=cur(); if(!m) return; const s=undoS.get(m.id); if(s) s.pop(); }
 function doUndo(){ step(undoS, redoS); }
@@ -158,6 +166,7 @@ function step(from,to){
   const t=to.get(m.id)||[]; t.push(capture(m)); to.set(m.id,t);
   Object.assign(m,JSON.parse(s.pop()));
   renderMap(); if(!idx.has(selectedId)) { selectedId=firstRootId(m); renderMap(); }
+  renderSidebar();
   save(m.id);
 }
 
@@ -202,7 +211,7 @@ function doLayout(){
 function renderMap(){
   const m=cur();
   updateEmpty();
-  if(!m){ for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; hideBar(); cards?.render(); assets?.render(); relations?.render(); return; }
+  if(!m){ for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; hideBar(); cards?.render(); assets?.render(); relations?.render(); draw?.render(); return; }
   buildIndex(); doLayout();
   const alive=new Set();
   for(const [id,info] of idx){
@@ -214,13 +223,14 @@ function renderMap(){
     if(id===editingId) cls+=' editing';
     if(drag && drag.id===id) cls+=' dragging';
     if(drag && drag.target===id) cls+=' drop';
+    if(info.node.page && maps.has(info.node.page)) cls+=' has-page';
     if(el.className!==cls) el.className=cls;
     if(id!==editingId && el.textContent!==info.node.text) el.textContent=info.node.text;
     el.style.transform=`translate(${o.x}px,${o.y}px)`;
     el.style.setProperty('--c', info.color||'var(--accent)');
   }
   for(const [id,el] of els){ if(!alive.has(id)){ el.remove(); els.delete(id); } }
-  cards?.render(); drawEdges(); applyView(); placeBar();
+  cards?.render(); draw?.render(); drawEdges(); applyView(); placeBar();
 }
 function drawEdges(){
   const down=isDown(); let out='';
@@ -258,9 +268,9 @@ function applyView(){
   canvas.style.backgroundSize=`${g}px ${g}px`;
   canvas.style.backgroundPosition=`${view.x}px ${view.y}px`;
   $('zLabel').textContent=Math.round(view.k*100)+'%';
-  relations?.place();
+  relations?.place(); draw?.place();
 }
-function bbox(){ let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity; for(const o of [...L.values(),...(assets?.boxes()||[]),...(cards?.boxes()||[])]){ a=Math.min(a,o.x); b=Math.min(b,o.y); c=Math.max(c,o.x+o.w); d=Math.max(d,o.y+o.h);} return {x0:a,y0:b,x1:c,y1:d}; }
+function bbox(){ let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity; for(const o of [...L.values(),...(assets?.boxes()||[]),...(cards?.boxes()||[]),...(draw?.boxes()||[])]){ a=Math.min(a,o.x); b=Math.min(b,o.y); c=Math.max(c,o.x+o.w); d=Math.max(d,o.y+o.h);} return {x0:a,y0:b,x1:c,y1:d}; }
 function fit(){
   const bb=bbox(); if(!Number.isFinite(bb.x0)) return; const cw=canvas.clientWidth, ch=canvas.clientHeight; const pad=isMobile()?32:90;
   const k=clamp(Math.min((cw-pad*2)/Math.max(1,bb.x1-bb.x0),(ch-pad*2)/Math.max(1,bb.y1-bb.y0)), .25, 1);
@@ -287,6 +297,9 @@ function placeBar(){
   nodebar.querySelector('[data-for="color"]').style.display=showColor?'':'none';
   nodebar.querySelector('[data-act="collapse"]').style.display=info.node.children.length?'':'none';
   nodebar.querySelector('[data-act="collapse"]').firstElementChild.style.transform=info.node.collapsed?'rotate(-90deg)':'';
+  const pageBtn=nodebar.querySelector('[data-act="page"]'), hasPage=!!(info.node.page&&maps.has(info.node.page));
+  pageBtn.title=hasPage?'開啟獨立頁面（雙擊節點）':'建立獨立頁面';
+  pageBtn.querySelector('i').className='bi '+(hasPage?'bi-folder2-open':'bi-folder-plus');
   $('curSwatch').style.setProperty('--c', info.color||PALETTE[0]);
   nodebar.classList.add('show');
   const bw=nodebar.offsetWidth, bh=nodebar.offsetHeight, cw=canvas.clientWidth;
@@ -310,6 +323,8 @@ listen(nodebar, 'click', e=>{
   else if(a==='sibling') addSibling();
   else if(a==='delete') deleteSel();
   else if(a==='collapse') toggleCollapse(selectedId);
+  else if(a==='page') openNodePage(selectedId);
+  else if(a==='view') viewNodePage(selectedId);
   else if(a==='color'){
     const info=idx.get(selectedId);
     $('swatches').querySelectorAll('button').forEach(x=>x.classList.toggle('on', x.dataset.color===(info&&info.color)));
@@ -347,7 +362,7 @@ function deleteSel(){
     m.relations=(m.relations||[]).filter(line=>!removed.has(line.from)&&!removed.has(line.to));
     if(info.tree.main){ const next=(m.trees||[]).shift(); m.root=next?next.root:null; m.rootX=next?next.x:0; m.rootY=next?next.y:0; }
     else m.trees=m.trees.filter(t=>t!==info.tree);
-    selectedId=null; renderMap(); save(currentId);
+    selectedId=null; renderMap(); save(currentId); renderSidebar();
     if(!m.root) toast('已刪除心智圖，可用左側「心智圖」工具再新增');
     return;
   }
@@ -357,7 +372,7 @@ function deleteSel(){
   cur().relations=(cur().relations||[]).filter(line=>!removed.has(line.from)&&!removed.has(line.to));
   p.children.splice(i,1);
   selectedId = (p.children[i]||p.children[i-1]||p).id;
-  renderMap(); save(currentId);
+  renderMap(); save(currentId); renderSidebar();
 }
 function toggleCollapse(id){
   if(!guard()) return; const info=idx.get(id); if(!info||!info.node.children.length) return;
@@ -433,7 +448,7 @@ listen(world, 'paste', e=>{
 const ptrs=new Map(); let gesture=null, drag=null, ghost=null;
 listen(canvas, 'pointerdown', e=>{
   if(e.pointerType==='mouse' && e.button!==0) return;
-  if(e.target.closest('.zoombar,.empty-state,.nodebar,.card')) return;
+  if(e.target.closest('.zoombar,.empty-state,.nodebar,.card,.draw-panel')) return;
   closePops();
   ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
   if(ptrs.size===2){ endDrag(false); const p=[...ptrs.values()]; gesture={type:'pinch', d:Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y), mx:(p[0].x+p[1].x)/2, my:(p[0].y+p[1].y)/2}; return; }
@@ -512,7 +527,11 @@ function endDrag(drop){
 
 listen(canvas, 'dblclick', e=>{
   const n=e.target.closest('.node');
-  if(n && n.dataset.id!==editingId){ e.preventDefault(); startEdit(n.dataset.id); }
+  if(!n || n.dataset.id===editingId) return;
+  e.preventDefault();
+  // A node that owns a page opens it; otherwise double-click edits the text.
+  const page=idx.get(n.dataset.id)?.node.page;
+  if(page && maps.has(page)) openNodePage(n.dataset.id); else startEdit(n.dataset.id);
 });
 listen(canvas, 'wheel', e=>{
   e.preventDefault();
@@ -563,15 +582,99 @@ listen(document, 'keydown', e=>{
 
 /* ---------------- sidebar ---------------- */
 function sortedMaps(){ return [...maps.values()].sort((a,b)=>(a.createdAt||0)-(b.createdAt||0)); }
+/* ---------------- independent pages ---------------- */
+// A page is a map opened from a board card; it stays out of the sidebar while its parent still holds that card.
+// Pages are referenced by board cards and by mind-map nodes that open into their own page.
+function boardRefs(m){
+  const ids=new Set();
+  (function walk(list){ for(const c of list||[]){ if(c.type==='board'&&c.mapId) ids.add(c.mapId); walk(c.cards); } })(m?.cards);
+  if(m) for(const t of treesOf(m)) (function walk(n){ if(n.page) ids.add(n.page); n.children.forEach(walk); })(t.root);
+  return ids;
+}
+// The node's page id, creating one named after the node the first time.
+function ensureNodePage(info){
+  if(info.node.page&&maps.has(info.node.page)) return info.node.page;
+  if(!guard()) return null;
+  snapshot();
+  const pid=createPage(); if(!pid){ dropSnapshot(); return null; }
+  info.node.page=pid; renamePage(pid, info.node.text||'未命名頁面');
+  save(currentId); renderMap(); return pid;
+}
+function viewNodePage(id){
+  const info=idx.get(id); if(!info) return;
+  if(editingId) commitEdit();
+  const pid=ensureNodePage(info); if(pid) openViewer(pid);
+}
+/* ---------------- side viewer ---------------- */
+// Shows a page in an embedded copy of the app; both windows stay in sync through the storage event.
+let viewing=null;
+function openViewer(id){
+  const m=maps.get(id); if(!m) return;
+  if(store.mode==='cloud'){ goto(id); return; }
+  viewing=id; $('viewTitle').textContent=m.title||'未命名頁面';
+  const src=location.pathname+'?embed=1#'+id, frame=$('viewFrame');
+  if(frame.getAttribute('src')!==src) frame.setAttribute('src',src);
+  $('viewPanel').hidden=false; app.classList.add('viewing');
+  // The canvas just got narrower: bring the selected node back into view.
+  const o=L.get(selectedId);
+  if(o){ const cw=canvas.clientWidth, sx=view.x+o.x*view.k, ex=view.x+(o.x+o.w)*view.k; if(sx<20||ex>cw-20){ view.x=cw/2-(o.x+o.w/2)*view.k; applyView(); } }
+  placeBar();
+}
+function closeViewer(){ viewing=null; $('viewPanel').hidden=true; $('viewPanel').classList.remove('full'); app.classList.remove('viewing'); syncViewFull(); }
+function syncViewFull(){ const full=$('viewPanel').classList.contains('full'), b=$('viewFull'); b.title=full?'還原側邊':'滿版'; b.setAttribute('aria-label',b.title); b.firstElementChild.className='bi '+(full?'bi-fullscreen-exit':'bi-arrows-fullscreen'); }
+listen($('viewClose'),'click',closeViewer);
+listen($('viewFull'),'click',()=>{ $('viewPanel').classList.toggle('full'); syncViewFull(); });
+listen($('viewOpen'),'click',()=>{ const shown=$('viewFrame').contentWindow?.location.hash.slice(1), id=maps.has(shown)?shown:viewing; closeViewer(); if(id) goto(id); });
+listen($('viewFrame'),'load',()=>{ try{ listen($('viewFrame').contentWindow,'hashchange',()=>{ const id=$('viewFrame').contentWindow.location.hash.slice(1); if(maps.has(id)){ viewing=id; $('viewTitle').textContent=maps.get(id).title||'未命名頁面'; } }); }catch(e){} });
+listen(document,'keydown',e=>{ if(e.key==='Escape' && viewing && !editingId && !e.defaultPrevented && document.activeElement?.tagName!=='INPUT' && document.activeElement?.tagName!=='TEXTAREA'){ closeViewer(); } });
+// Another window of the app (or the side viewer) saved: take its newer maps and folders without writing back.
+listen(window,'storage',e=>{
+  if(store.mode==='cloud') return;
+  if(e.key===FOLDER_KEY){ try{ folders=cleanFolders(JSON.parse(e.newValue||'[]')); }catch(err){} renderSidebar(); return; }
+  if(e.key!==LS_KEY) return;
+  let list; try{ list=JSON.parse(e.newValue||'[]'); }catch(err){ return; } if(!Array.isArray(list)) return;
+  const incoming=new Map(list.filter(m=>m&&m.id&&'root' in m).map(m=>[m.id,m]));
+  let curChanged=false;
+  for(const [id,m] of incoming){ const mine=maps.get(id); if(!mine||(m.updatedAt||0)>(mine.updatedAt||0)){ if(id===currentId&&editingId) continue; maps.set(id,sanitizeMap(m)); if(id===currentId) curChanged=true; } }
+  for(const id of [...maps.keys()]) if(!incoming.has(id)){ maps.delete(id); if(id===currentId) curChanged=true; }
+  if(viewing&&maps.has(viewing)) $('viewTitle').textContent=maps.get(viewing).title||'未命名頁面';
+  if(curChanged){ if(!maps.has(currentId)){ const first=sortedMaps()[0]; openMap(first?first.id:null); } else { if(!idx.has(selectedId)) selectedId=null; syncHeader(); renderMap(); } }
+  renderSidebar();
+});
+// Opens the node's page, creating one named after the node the first time.
+function openNodePage(id){
+  const info=idx.get(id); if(!info) return;
+  if(editingId) commitEdit();
+  const pid=ensureNodePage(info); if(pid) goto(pid);
+}
+function isSubPage(m){ const p=m&&m.parentId&&maps.get(m.parentId); return !!p&&boardRefs(p).has(m.id); }
+function topPageOf(id){ let m=maps.get(id); for(let n=0; m&&isSubPage(m)&&n<50; n++) m=maps.get(m.parentId); return m?.id; }
+function pageTree(m){ const out=[m], seen=new Set([m.id]); for(let i=0;i<out.length;i++) for(const id of boardRefs(out[i])){ const c=maps.get(id); if(c&&!seen.has(id)){ seen.add(id); out.push(c); } } return out; }
+function createPage(){
+  const parent=cur(); if(!parent||store.readOnly) return null;
+  const m=makeMap(false); m.root=null; m.title='未命名頁面'; m.parentId=parent.id;
+  const last=sortedMaps().pop(); if(last&&m.createdAt<=last.createdAt) m.createdAt=last.createdAt+1;
+  maps.set(m.id,m); save(m.id,true); return m.id;
+}
+function pageInfo(id){ const m=maps.get(id); return m ? {title:m.title, count:(m.cards||[]).length+(m.images||[]).length+(m.strokes||[]).length+treesOf(m).length} : null; }
+function renamePage(id,title){ const m=maps.get(id); if(!m||store.readOnly||!title||m.title===title) return; m.title=title; save(id); renderSidebar(); }
 function sortedFolders(){ return [...folders].sort((a,b)=>a.createdAt-b.createdAt); }
-let renamingFolder=null;
+const folderById=id=>id?folders.find(f=>f.id===id):undefined;
+function childFolders(id){ return sortedFolders().filter(f=>(f.parentId||null)===(id||null)); }
+// True when folder `id` is `ancestorId` itself or sits somewhere inside it.
+function isFolderInside(id, ancestorId){ for(let f=folderById(id), n=0; f&&n<500; f=folderById(f.parentId), n++) if(f.id===ancestorId) return true; return false; }
+function folderPath(f){ const names=[]; for(let x=f, n=0; x&&n<500; x=folderById(x.parentId), n++) names.unshift(x.name||'未命名資料夾'); return names.join(' / '); }
+function folderTree(){ const out=[]; (function walk(id){ for(const f of childFolders(id)){ out.push(f); walk(f.id); } })(null); return out; }
+function mapsUnder(id){ let n=0; for(const m of maps.values()) if(m.folderId&&isFolderInside(m.folderId,id)) n++; return n; }
+function openAncestors(id){ let changed=false; for(let f=folderById(id), n=0; f&&n<500; f=folderById(f.parentId), n++) if(!f.open){ f.open=true; changed=true; } return changed; }
+let renamingFolder=null, sidebarActive=null;
 function moreButton(label, data){
   const mb=document.createElement('button'); mb.className='icon-btn more'; mb.title='更多'; mb.setAttribute('aria-label',label); Object.assign(mb.dataset,data);
   mb.innerHTML='<i class="bi bi-three-dots" aria-hidden="true"></i>'; return mb;
 }
-function pageRow(m, folderId){
-  const row=document.createElement('div'); row.className='page'+(m.id===currentId?' active':'')+(folderId?' nested':''); row.dataset.id=m.id; row.tabIndex=0; row.setAttribute('role','button');
-  if(folderId) row.dataset.folder=folderId;
+function pageRow(m, folderId, depth){
+  const row=document.createElement('div'); row.className='page'+(m.id===currentId||m.id===sidebarActive?' active':'')+(folderId?' nested':''); row.dataset.id=m.id; row.tabIndex=0; row.setAttribute('role','button');
+  if(folderId){ row.dataset.folder=folderId; row.style.setProperty('--depth',depth); }
   row.draggable=!store.readOnly;
   const i=document.createElement('span'); i.className='pi'; i.innerHTML=stickyIcon(m.color,18);
   const t=document.createElement('span'); t.className='pt'; t.textContent=m.title||'未命名心智圖';
@@ -579,10 +682,11 @@ function pageRow(m, folderId){
   if(!store.readOnly) row.appendChild(moreButton('更多選項',{more:m.id}));
   return row;
 }
-function folderRow(f, count, open){
+function folderRow(f, count, open, depth){
   const row=document.createElement('div'); row.className='folder-row'+(open?' open':''); row.dataset.folder=f.id; row.tabIndex=0; row.setAttribute('role','button'); row.setAttribute('aria-expanded',String(open));
+  row.style.setProperty('--depth',depth); row.draggable=!store.readOnly&&renamingFolder!==f.id;
   const chev=document.createElement('i'); chev.className='bi bi-chevron-right fchev'; chev.setAttribute('aria-hidden','true');
-  const i=document.createElement('span'); i.className='pi'; i.innerHTML=FOLDER_ICON;
+  const i=document.createElement('span'); i.className='pi'; i.innerHTML=folderIcon(f.color,18);
   row.append(chev,i);
   if(renamingFolder===f.id){
     const input=document.createElement('input'); input.className='folder-name-input'; input.value=f.name; input.setAttribute('aria-label','資料夾名稱'); input.dataset.rename=f.id; row.append(input);
@@ -594,19 +698,26 @@ function folderRow(f, count, open){
 function renderSidebar(){
   const q=$('search').value.trim().toLowerCase();
   const match=m=>!q||(m.title||'').toLowerCase().includes(q);
-  const all=sortedMaps(), known=new Set(folders.map(f=>f.id));
+  const all=sortedMaps().filter(m=>!isSubPage(m)||(q&&match(m))), known=new Set(folders.map(f=>f.id));
+  sidebarActive=topPageOf(currentId);
   const box=$('pages'); box.innerHTML=''; let shown=0;
   $('count').textContent=all.length?String(all.length):'';
-  for(const f of sortedFolders()){
+  // Children are built first so a folder can be hidden when nothing inside matches the search.
+  function addFolder(f, depth, out){
+    const kids=document.createDocumentFragment(); let kidShown=0;
+    for(const sub of childFolders(f.id)) if(addFolder(sub,depth+1,kids)) kidShown++;
     const inside=all.filter(m=>m.folderId===f.id), nameHit=!!q&&(f.name||'').toLowerCase().includes(q);
     const list=nameHit?inside:inside.filter(match);
-    if(q&&!list.length&&!nameHit) continue;
-    const open=f.open||(!!q&&list.length>0);
-    box.appendChild(folderRow(f,inside.length,open)); shown++;
-    if(!open) continue;
-    list.forEach(m=>box.appendChild(pageRow(m,f.id)));
-    if(!inside.length){ const d=document.createElement('div'); d.className='folder-empty'; d.dataset.folder=f.id; d.textContent='把心智圖拖進這裡'; box.appendChild(d); }
+    if(q&&!nameHit&&!kidShown&&!list.length) return false;
+    const open=f.open||(!!q&&kidShown+list.length>0);
+    out.appendChild(folderRow(f,mapsUnder(f.id),open,depth));
+    if(!open) return true;
+    out.appendChild(kids);
+    list.forEach(m=>out.appendChild(pageRow(m,f.id,depth+1)));
+    if(!inside.length&&!childFolders(f.id).length){ const d=document.createElement('div'); d.className='folder-empty'; d.dataset.folder=f.id; d.style.setProperty('--depth',depth+1); d.textContent='把心智圖或資料夾拖進這裡'; out.appendChild(d); }
+    return true;
   }
+  for(const f of childFolders(null)) if(addFolder(f,0,box)) shown++;
   for(const m of all){ if(!known.has(m.folderId)&&match(m)){ box.appendChild(pageRow(m,null)); shown++; } }
   if(!shown){
     const d=document.createElement('div'); d.className='no-pages';
@@ -624,7 +735,7 @@ listen($('pages'), 'click', e=>{
   const mb=e.target.closest('[data-more]');
   if(mb){ e.stopPropagation(); openPageMenu(mb.dataset.more, mb); return; }
   const fm=e.target.closest('[data-folder-more]');
-  if(fm){ e.stopPropagation(); folderFor=fm.dataset.folderMore; showPop($('folderMenu'), fm); return; }
+  if(fm){ e.stopPropagation(); folderFor=fm.dataset.folderMore; folderAnchor=fm; showPop($('folderMenu'), fm); return; }
   if(e.target.closest('[data-rename]')) return;
   const fr=e.target.closest('.folder-row'); if(fr){ toggleFolder(fr.dataset.folder); return; }
   const row=e.target.closest('.page'); if(row) goto(row.dataset.id);
@@ -642,55 +753,78 @@ listen($('newBtn'), 'click', ()=>createMap(false));
 listen($('newFolderBtn'), 'click', ()=>createFolder());
 
 /* ---------------- folders ---------------- */
-function createFolder(moveId){
+function createFolder(moveId, parentId){
   if(store.readOnly||!ready) return;
   const last=sortedFolders().pop(), f={id:uid('f'), name:'新資料夾', open:true, createdAt:Math.max(Date.now(), (last?last.createdAt:0)+1)};
+  if(folderById(parentId)){ f.parentId=parentId; openAncestors(parentId); }
   folders.push(f); saveFolders();
   if(moveId) setFolder(moveId, f.id, true);
   renamingFolder=f.id; renderSidebar();
 }
 function commitFolderName(input){
-  const f=folders.find(x=>x.id===input.dataset.rename); if(renamingFolder!==input.dataset.rename) return;
+  const f=folderById(input.dataset.rename); if(renamingFolder!==input.dataset.rename) return;
   renamingFolder=null;
   if(f){ const name=input.value.trim()||'未命名資料夾'; if(name!==f.name){ f.name=name; saveFolders(); } }
   renderSidebar();
 }
-function toggleFolder(id){ const f=folders.find(x=>x.id===id); if(!f) return; f.open=!f.open; saveFolders(); renderSidebar(); }
+function toggleFolder(id){ const f=folderById(id); if(!f) return; f.open=!f.open; saveFolders(); renderSidebar(); }
 function setFolder(mapId, folderId, quiet){
-  const m=maps.get(mapId), f=folders.find(x=>x.id===folderId); if(!m||store.readOnly) return;
+  const m=maps.get(mapId), f=folderById(folderId); if(!m||store.readOnly) return;
   if((m.folderId||null)===(f?f.id:null)) return;
-  if(f){ m.folderId=f.id; if(!f.open){ f.open=true; saveFolders(); } } else delete m.folderId;
+  if(f){ m.folderId=f.id; if(openAncestors(f.id)) saveFolders(); } else delete m.folderId;
   save(mapId,true); renderSidebar();
   if(!quiet) toast(f?`已移到「${f.name}」`:'已移出資料夾');
 }
-function deleteFolder(id){
-  folders=folders.filter(f=>f.id!==id);
-  for(const m of maps.values()) if(m.folderId===id){ delete m.folderId; save(m.id,true); }
-  saveFolders(); renderSidebar(); toast('已刪除資料夾，裡面的心智圖移到外層');
+function setFolderParent(id, parentId, quiet){
+  const f=folderById(id), p=folderById(parentId); if(!f||store.readOnly) return;
+  if(p&&isFolderInside(p.id,f.id)){ toast('不能把資料夾放進它自己裡面'); return; }
+  if((f.parentId||null)===(p?p.id:null)) return;
+  if(p){ f.parentId=p.id; openAncestors(p.id); } else delete f.parentId;
+  saveFolders(); renderSidebar();
+  if(!quiet) toast(p?`已移到「${p.name}」`:'已移到最外層');
 }
-// Drag a mind map row onto a folder (or onto loose space to take it out).
-let dragMap=null;
+// Deleting a folder moves its maps and sub-folders up one level.
+function deleteFolder(id){
+  const f=folderById(id); if(!f) return; const parent=f.parentId;
+  folders=folders.filter(x=>x!==f);
+  for(const sub of folders) if(sub.parentId===id){ if(parent) sub.parentId=parent; else delete sub.parentId; }
+  for(const m of maps.values()) if(m.folderId===id){ if(parent) m.folderId=parent; else delete m.folderId; save(m.id,true); }
+  saveFolders(); renderSidebar(); toast('已刪除資料夾，裡面的內容移到上一層');
+}
+// Drag a mind map or folder row onto a folder (or onto loose space to take it out).
+let dragItem=null;
 function dropFolderAt(target){ const el=target.closest?.('[data-folder]'); return el?el.dataset.folder:null; }
+// undefined means the drop is not allowed (a folder into itself or its descendants).
+function dropTargetFor(target){ const fid=dropFolderAt(target); return dragItem?.kind==='folder'&&fid&&isFolderInside(fid,dragItem.id) ? undefined : fid; }
 function clearDropMarks(){ $('pages').classList.remove('drop-root'); $('pages').querySelectorAll('.drop').forEach(el=>el.classList.remove('drop')); }
 listen($('pages'), 'dragstart', e=>{
-  const row=e.target.closest?.('.page'); if(!row||store.readOnly){ e.preventDefault(); return; }
-  dragMap=row.dataset.id; e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',dragMap); row.classList.add('dragging');
+  const fr=e.target.closest?.('.folder-row'), row=e.target.closest?.('.page');
+  if(store.readOnly||(!fr&&!row)){ e.preventDefault(); return; }
+  dragItem=fr?{kind:'folder',id:fr.dataset.folder}:{kind:'map',id:row.dataset.id};
+  e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',dragItem.id); (fr||row).classList.add('dragging');
 });
 listen($('pages'), 'dragover', e=>{
-  if(!dragMap) return; e.preventDefault(); e.dataTransfer.dropEffect='move';
-  const fid=dropFolderAt(e.target); clearDropMarks();
+  if(!dragItem) return; clearDropMarks();
+  const fid=dropTargetFor(e.target); if(fid===undefined) return;
+  e.preventDefault(); e.dataTransfer.dropEffect='move';
+  const parent=dragItem.kind==='map'?maps.get(dragItem.id)?.folderId:folderById(dragItem.id)?.parentId;
   if(fid) $('pages').querySelector(`.folder-row[data-folder="${CSS.escape(fid)}"]`)?.classList.add('drop');
-  else if(maps.get(dragMap)?.folderId) $('pages').classList.add('drop-root');
+  else if(parent) $('pages').classList.add('drop-root');
 });
-listen($('pages'), 'drop', e=>{ if(!dragMap) return; e.preventDefault(); const id=dragMap; dragMap=null; clearDropMarks(); setFolder(id, dropFolderAt(e.target)); });
-listen($('pages'), 'dragend', ()=>{ dragMap=null; clearDropMarks(); $('pages').querySelectorAll('.dragging').forEach(el=>el.classList.remove('dragging')); });
+listen($('pages'), 'drop', e=>{
+  if(!dragItem) return; e.preventDefault();
+  const item=dragItem, fid=dropTargetFor(e.target); dragItem=null; clearDropMarks();
+  if(fid===undefined) return;
+  if(item.kind==='map') setFolder(item.id, fid); else setFolderParent(item.id, fid);
+});
+listen($('pages'), 'dragend', ()=>{ dragItem=null; clearDropMarks(); $('pages').querySelectorAll('.dragging').forEach(el=>el.classList.remove('dragging')); });
 
 function exportFile(all) {
   if(editingId) commitEdit();
-  const selected = all ? sortedMaps() : (cur() ? [cur()] : []);
+  const selected = all ? sortedMaps() : (cur() ? pageTree(cur()) : []);
   if(!selected.length) return;
-  const used=new Set(selected.map(m=>m.folderId));
-  const blob = new Blob([serializeMaps(selected, folders.filter(f=>used.has(f.id)))], {type:'application/json;charset=utf-8'});
+  const used=new Set(); for(const m of selected) for(let f=folderById(m.folderId), n=0; f&&n<500; f=folderById(f.parentId), n++) used.add(f.id);
+  const blob = new Blob([serializeMaps(selected, all ? folders : folders.filter(f=>used.has(f.id)))], {type:'application/json;charset=utf-8'});
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   const name = all ? 'YoZuMind-全部備份' : (cur().title || '未命名心智圖');
@@ -712,11 +846,11 @@ listen($('importFile'), 'change', async e=>{
     const imported = parseMaps(text, uid);
     const known = new Set(folders.map(f=>f.id)), added = parseFolders(text).filter(f=>!known.has(f.id));
     if(editingId) commitEdit();
-    folders.push(...added);
+    folders=cleanFolders([...folders, ...added]);
     imported.forEach(map=>{ if(map.folderId && !folders.some(f=>f.id===map.folderId)) delete map.folderId; maps.set(map.id,map); });
     // Persist the complete batch before displaying it; roll back on quota errors.
     if(store.mode!=='cloud' && !lsSaveAll()) {
-      imported.forEach(map=>maps.delete(map.id)); folders=folders.filter(f=>!added.includes(f));
+      imported.forEach(map=>maps.delete(map.id)); folders=folders.filter(f=>known.has(f.id));
       throw new Error('瀏覽器空間不足，匯入未完成；原有心智圖已保留。');
     }
     if(added.length) saveFolders();
@@ -739,7 +873,7 @@ function createMap(sample){
   if(!sample){ setTimeout(()=>{ $('title').focus(); $('title').select(); }, 50); }
 }
 function goto(id){
-  const f=folders.find(x=>x.id===maps.get(id)?.folderId); if(f&&!f.open){ f.open=true; saveFolders(); }
+  if(openAncestors(maps.get(topPageOf(id))?.folderId)) saveFolders();
   if(location.hash.slice(1)!==id) location.hash=id;
   openMap(id);
   if(isMobile()) app.classList.add('side-closed');
@@ -760,12 +894,16 @@ function syncHeader(){
   $('title').value = m ? (m.title||'') : '';
   $('title').disabled = !m || store.readOnly;
   $('crumbIcon').innerHTML = stickyIcon(m?.color,20);
+  const trail=[]; for(let p=isSubPage(m)?maps.get(m.parentId):null, n=0; p&&n<50; p=isSubPage(p)?maps.get(p.parentId):null, n++) trail.unshift(p);
+  $('crumbs').replaceChildren(...trail.flatMap(p=>{ const b=document.createElement('button'); b.className='crumb'; b.dataset.goto=p.id; b.textContent=p.title||'未命名心智圖'; b.title='回到「'+b.textContent+'」'; const sep=document.createElement('span'); sep.className='crumb-sep'; sep.textContent='/'; return [b,sep]; }));
+  $('crumbs').hidden=!trail.length;
   $('crumbIcon').disabled = !m || store.readOnly;
   $('layDown').classList.toggle('on', !!m && m.layout!=='right');
   $('layRight').classList.toggle('on', !!m && m.layout==='right');
   document.title = m ? `${m.title||'未命名心智圖'} | YoZu 心智圖` : 'YoZu 心智圖';
 }
 listen($('title'), 'input', ()=>{ const m=cur(); if(!m||store.readOnly) return; m.title=$('title').value; document.title=`${m.title||'未命名心智圖'} | YoZu 心智圖`; renderSidebar(); save(m.id); });
+listen($('crumbs'), 'click', e=>{ const b=e.target.closest('[data-goto]'); if(b) goto(b.dataset.goto); });
 listen($('title'), 'keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); canvas.focus(); } });
 function setLayout(l){ const m=cur(); if(!m||store.readOnly||m.layout===l) return; m.layout=l; syncHeader(); renderMap(); fit(); save(m.id); }
 listen($('layDown'), 'click', ()=>setLayout('down'));
@@ -788,7 +926,7 @@ listen($('themeBtn'), 'click', ()=>{ applyTheme(document.documentElement.dataset
 syncTheme();
 
 /* ---------------- popovers ---------------- */
-let menuFor=null, folderFor=null;
+let menuFor=null, folderFor=null, folderAnchor=null, moveFor=null, moveKind='map';
 function closePops(){
   document.querySelectorAll('.pop.show').forEach(p=>p.classList.remove('show'));
   const d=$('pageMenu').querySelector('[data-m="del"]'); d.classList.remove('armed'); d.innerHTML='<i class="bi bi-trash" aria-hidden="true"></i>刪除';
@@ -803,31 +941,52 @@ function showPop(p, anchor, align){
 }
 let menuAnchor=null;
 function openPageMenu(id, anchor){ menuFor=id; menuAnchor=anchor; showPop($('pageMenu'), anchor); }
-function openMovePop(id, anchor){
-  const pop=$('movePop'), m=maps.get(id); pop.innerHTML='';
+function openMovePop(kind, id, anchor){
+  const pop=$('movePop'); pop.innerHTML='';
+  const current=kind==='map'?maps.get(id)?.folderId:folderById(id)?.parentId;
   const item=(to,html,label,on)=>{ const b=document.createElement('button'); b.className='mi'+(on?' on':''); b.dataset.to=to; b.innerHTML=html; b.append(label); pop.appendChild(b); };
-  for(const f of sortedFolders()) item(f.id, FOLDER_ICON, f.name||'未命名資料夾', m.folderId===f.id);
-  if(m.folderId) item('', '<i class="bi bi-box-arrow-up-left" aria-hidden="true"></i>', '移出資料夾', false);
-  item('new', '<i class="bi bi-folder-plus" aria-hidden="true"></i>', '新增資料夾並移入', false);
-  menuFor=id; showPop(pop, anchor);
+  for(const f of folderTree()){ if(kind==='folder'&&isFolderInside(f.id,id)) continue; item(f.id, folderIcon(f.color), folderPath(f), current===f.id); }
+  if(current) item('', '<i class="bi bi-box-arrow-up-left" aria-hidden="true"></i>', kind==='map'?'移出資料夾':'移到最外層', false);
+  if(kind==='map') item('new', '<i class="bi bi-folder-plus" aria-hidden="true"></i>', '新增資料夾並移入', false);
+  if(!pop.children.length) item('', '<i class="bi bi-info-circle" aria-hidden="true"></i>', '沒有其他資料夾', false);
+  moveKind=kind; moveFor=id; showPop(pop, anchor);
 }
 listen($('movePop'), 'click', e=>{
-  const b=e.target.closest('[data-to]'); if(!b||!menuFor) return; e.stopPropagation(); closePops();
-  if(b.dataset.to==='new') createFolder(menuFor); else setFolder(menuFor, b.dataset.to||null);
+  const b=e.target.closest('[data-to]'); if(!b||!moveFor) return; e.stopPropagation(); closePops();
+  if(moveKind==='folder') setFolderParent(moveFor, b.dataset.to||null);
+  else if(b.dataset.to==='new') createFolder(moveFor); else setFolder(moveFor, b.dataset.to||null);
+});
+(function buildFolderColors(){
+  const g=$('folderColorGrid'); g.replaceChildren();
+  for(const [key,name] of [['default','預設（跟隨主題）'],...Object.entries(FOLDER_COLORS).map(([k,[,n]])=>[k,n])]){
+    const b=document.createElement('button'); b.innerHTML=folderIcon(key,24); b.title=name; b.setAttribute('aria-label','資料夾顏色 '+name); b.dataset.color=key; g.appendChild(b);
+  }
+})();
+listen($('folderColorGrid'), 'click', e=>{
+  const b=e.target.closest('[data-color]'), f=folderById(folderFor); if(!b||!f) return;
+  if(b.dataset.color==='default') delete f.color; else f.color=b.dataset.color;
+  saveFolders(); renderSidebar(); closePops();
 });
 listen($('folderMenu'), 'click', e=>{
-  const b=e.target.closest('[data-f]'); if(!b||!folderFor) return; e.stopPropagation();
-  if(b.dataset.f==='rename'){ closePops(); renamingFolder=folderFor; const f=folders.find(x=>x.id===folderFor); if(f) f.open=true; renderSidebar(); }
+  const b=e.target.closest('[data-f]'), f=folderById(folderFor); if(!b||!f) return; e.stopPropagation();
+  const anchor=folderAnchor&&folderAnchor.isConnected?folderAnchor:$('folderMenu');
+  if(b.dataset.f==='rename'){ closePops(); renamingFolder=f.id; openAncestors(f.parentId); renderSidebar(); }
+  else if(b.dataset.f==='sub'){ closePops(); createFolder(null, f.id); }
+  else if(b.dataset.f==='move') openMovePop('folder', f.id, anchor);
+  else if(b.dataset.f==='color'){
+    $('folderColorGrid').querySelectorAll('[data-color]').forEach(x=>x.classList.toggle('on', x.dataset.color===(f.color||'default')));
+    showPop($('folderColorPop'), anchor);
+  }
   else if(b.dataset.f==='del'){
     if(!b.classList.contains('armed')){ b.classList.add('armed'); b.textContent='再按一次確定刪除'; return; }
-    closePops(); deleteFolder(folderFor);
+    closePops(); deleteFolder(f.id);
   }
 });
 listen($('pageMenu'), 'click', e=>{
   const b=e.target.closest('[data-m]'); if(!b||!menuFor) return; e.stopPropagation();
   const m=maps.get(menuFor); if(!m) return closePops();
   if(b.dataset.m==='rename'){ closePops(); goto(m.id); setTimeout(()=>{ $('title').focus(); $('title').select(); },60); }
-  else if(b.dataset.m==='move'){ openMovePop(m.id, menuAnchor&&menuAnchor.isConnected?menuAnchor:$('pageMenu')); }
+  else if(b.dataset.m==='move'){ openMovePop('map', m.id, menuAnchor&&menuAnchor.isConnected?menuAnchor:$('pageMenu')); }
   else if(b.dataset.m==='dup'){
     closePops(); const c=parseMaps(JSON.stringify(m),uid)[0]; c.title=(m.title||'未命名心智圖')+' 的副本';
     const last=sortedMaps().pop(); c.createdAt=Math.max(Date.now(), (last?last.createdAt:0)+1); c.rev='';
@@ -968,13 +1127,16 @@ async function init(){
   }
 }
 if(document.fonts && document.fonts.ready){ document.fonts.ready.then(()=>{ mcache.clear(); if(cur()) renderMap(); }); }
+// Images, top-level cards and drawings share one stacking order; the newest or last moved sits on top.
+function nextZ(){ const m=cur(); let z=0; for(const o of [...(m?.images||[]),...(m?.cards||[]),...(m?.strokes||[])]) z=Math.max(z,o.z||0); return z+1; }
 function clearNodeSelection(){ if(editingId) commitEdit(); selectedId=null; for(const el of els.values()) el.classList.remove('sel'); hideBar(); }
-// Relations go first so their capture-phase pointer handler wins over images and cards.
+// Drawing goes first, then relations, so their capture-phase pointer handlers win over images and cards.
+draw=setupDraw({nextZ,canvas,world,button:$('drawBtn'),rail:$('toolrail'),getMap:cur,getView:()=>view,uid,snapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();cards?.deselect();assets?.deselect();relations?.deselect();}});
 relations=setupRelations({canvas,world,button:$('relationBtn'),getMap:cur,getView:()=>view,getBox:id=>L.get(id)||(cur()?.images||[]).find(i=>i.id===id)||cards?.box(id),uid,snapshot,dropSnapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();cards?.deselect();assets?.deselect();}});
-assets=setupCanvasAssets({canvas,world,getMap:cur,getView:()=>view,uid,snapshot,save,toast,canEdit:()=>!store.readOnly,clearNodeSelection:()=>{clearNodeSelection();cards?.deselect();relations?.deselect();},onChange:()=>relations?.render(),hoverDrop:(x,y)=>cards?.hoverDrop(x,y),dropImage:(x,y,image)=>!!cards?.dropImage(x,y,image)});
-cards=setupCards({canvas,world,rail:$('toolrail'),getMap:cur,getView:()=>view,uid,snapshot,dropSnapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();assets?.deselect();relations?.deselect();},hasNodeSelection:()=>!!selectedId,createTree,onChange:()=>relations?.render()});
+assets=setupCanvasAssets({nextZ,canvas,world,getMap:cur,getView:()=>view,uid,snapshot,save,toast,canEdit:()=>!store.readOnly,clearNodeSelection:()=>{clearNodeSelection();cards?.deselect();relations?.deselect();},onChange:()=>relations?.render(),hoverDrop:(x,y)=>cards?.hoverDrop(x,y),dropImage:(x,y,image)=>!!cards?.dropImage(x,y,image)});
+cards=setupCards({createPage,pageInfo,openPage:id=>goto(id),viewPage:id=>{ if(editingId) commitEdit(); openViewer(id); },renamePage,pagesChanged:()=>renderSidebar(),nextZ,canvas,world,rail:$('toolrail'),getMap:cur,getView:()=>view,uid,snapshot,dropSnapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();assets?.deselect();relations?.deselect();},hasNodeSelection:()=>!!selectedId,createTree,onChange:()=>relations?.render()});
 init();
 
 // Remove everything this run drew so a hot reload or remount starts from a clean canvas.
-return () => { for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; hideBar(); ghost?.remove(); relations?.destroy(); cards?.destroy(); assets?.destroy(); disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
+return () => { for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; hideBar(); ghost?.remove(); draw?.destroy(); relations?.destroy(); cards?.destroy(); assets?.destroy(); disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
 }

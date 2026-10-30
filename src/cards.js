@@ -1,4 +1,5 @@
-// Milanote-style cards floating on the canvas. Columns and folders hold other cards; folders open and close.
+// Milanote-style cards floating on the canvas. Columns and folders hold other cards; notes can embed page cards.
+// A "board" card links to its own page (a separate map) and can be resized, framed and nested.
 import { readImageFile } from './canvas-assets.js';
 
 const bi = name => `<i class="bi bi-${name}" aria-hidden="true"></i>`;
@@ -9,15 +10,47 @@ export function stickyIcon(color, size=22) {
   const hex=NOTE_COLORS[color]?.[0];
   return `<svg class="sticky-icon${hex?' tinted':''}"${hex?` style="--sc:${hex}"`:''} viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path class="paper" d="M5 3.5h14a1.5 1.5 0 0 1 1.5 1.5v10.3L15.3 20.5H5A1.5 1.5 0 0 1 3.5 19V5A1.5 1.5 0 0 1 5 3.5z"/><path class="fold" d="M20.5 15.3h-3.7a1.5 1.5 0 0 0-1.5 1.5v3.7z"/></svg>`;
 }
-export const FOLDER_ICON = '<svg class="folder-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 6a2 2 0 0 1 2-2h5.2l2 2H20a2 2 0 0 1 2 2v2H2z" fill="var(--folder-back)"/><rect x="4" y="7.5" width="16" height="6" rx="1" fill="var(--folder-paper)"/><path d="M2 10h20v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2z" fill="var(--folder-front)"/></svg>';
+// Folder icon colors; the default follows the theme tokens.
+export const FOLDER_COLORS = { orange:['#f59e0b','橘'], red:['#ef5b5b','紅'], pink:['#ec6fae','粉紅'], purple:['#9b7be8','紫'], blue:['#4a90e2','藍'], teal:['#22b0a0','青'], green:['#56b65a','綠'], gray:['#9aa3ad','灰'] };
+export function folderIcon(color, size=22) {
+  const hex=FOLDER_COLORS[color]?.[0];
+  return `<svg class="folder-icon"${hex?` style="--fc:${hex};--fc-back:color-mix(in srgb, ${hex} 72%, #000)"`:''} viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path class="back" d="M2 6a2 2 0 0 1 2-2h5.2l2 2H20a2 2 0 0 1 2 2v2H2z"/><rect class="paper" x="4" y="7.5" width="16" height="6" rx="1"/><path class="front" d="M2 10h20v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2z"/></svg>`;
+}
+export const FOLDER_ICON = folderIcon();
 // [type, label, icon html] in rail order; "mindmap" adds another mind-map tree to the board.
 export const RAIL_TOOLS = [
   ['note','筆記',bi('sticky')], ['link','連結',bi('link-45deg')], ['todo','待辦清單',bi('list-check')], ['column','欄位',bi('card-heading')],
-  ['mindmap','心智圖',bi('diagram-3')],
+  ['mindmap','心智圖',bi('diagram-3')], ['board','獨立頁面',bi('folder')],
 ];
 const TOOL_INFO = Object.fromEntries(RAIL_TOOLS.map(([type,label,icon])=>[type,{label,icon}]));
 const CONTAINERS = ['column','folder'];
+// Notes and columns can be resized too; their height is a minimum so content is never cut off.
+const SIZED = ['note','column'];
+const MIN_SIZE = {board:[100,90], note:[140,48], column:[200,60]};
+// A note line starting with "[ ]" or "[x]" renders as a checkable to-do.
+const TODO_LINE = /^\s*\[( |x|X)\]\s?(.*)$/;
+// Lines between ``` fences render as a highlighted code block; the opening fence may name the language.
+const FENCE = /^\s*```\s*([\w#+.-]*)\s*$/;
+const KEYWORDS = new Set('const let var function return if else for while do switch case break continue new class extends import export from default async await try catch finally throw typeof instanceof in of this null undefined true false def elif lambda pass None True False self public private protected static void int string bool select where and or not as with yield'.split(' '));
+const TOKEN = /(\/\/.*|\/\*.*?\*\/|#(?![\w-]*\().*$)|("(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|`(?:\\.|[^`\\])*`?)|(\b\d[\d_]*(?:\.\d+)?\b)|([A-Za-z_$][\w$]*)|(=>|[{}()[\]])/g;
+// A tiny line-based highlighter: good enough for JS/TS/JSON/Python/SQL snippets without pulling in a library.
+function highlightCode(line) {
+  const out=[]; let last=0, m;
+  const push=(text,cls)=>{ if(text) out.push(cls ? h('span',cls,text) : document.createTextNode(text)); };
+  TOKEN.lastIndex=0;
+  while((m=TOKEN.exec(line))) {
+    push(line.slice(last,m.index));
+    const [t,comment,str,num,word]=m, rest=line.slice(TOKEN.lastIndex);
+    let cls='tk-punc';
+    if(comment) cls='tk-comment'; else if(str) cls=/^\s*:(?!:)/.test(rest)?'tk-prop':'tk-str'; else if(num) cls='tk-num';
+    else if(word) cls=KEYWORDS.has(word)?'tk-kw' : /^\s*:(?!:)/.test(rest)&&!/\?[^:]*$/.test(line.slice(0,m.index))?'tk-prop' : /^\s*\(/.test(rest)?'tk-fn' : /^\s*\)?\s*=>/.test(rest)?'tk-param' : /^[A-Z]/.test(word)?'tk-type' : '';
+    push(t,cls); last=TOKEN.lastIndex;
+  }
+  push(line.slice(last)); return out;
+}
 const nestable = type => !CONTAINERS.includes(type) && type!=='mindmap';
+// Columns and folders take any nestable card; a note only embeds page cards.
+const accepts = (box, type) => CONTAINERS.includes(box) ? nestable(type) : box==='note' && type==='board';
 
 const h = (tag, cls, text) => { const el=document.createElement(tag); if(cls) el.className=cls; if(text!=null) el.textContent=text; return el; };
 const icon = name => { const i=h('i','bi bi-'+name); i.setAttribute('aria-hidden','true'); return i; };
@@ -37,50 +70,65 @@ export function safeUrl(value) {
 }
 const hostOf = href => href ? new URL(href).hostname.replace(/^www\./,'') : '';
 
-export function setupCards({ canvas, world, rail, getMap, getView, uid, snapshot, dropSnapshot, save, toast, canEdit, clearSelection, hasNodeSelection, createTree, onChange }) {
+export function setupCards({ canvas, world, rail, getMap, getView, uid, snapshot, dropSnapshot, save, toast, canEdit, clearSelection, hasNodeSelection, createTree, nextZ, createPage, pageInfo, openPage, viewPage, renamePage, pagesChanged, onChange }) {
   const listeners = [];
   const on = (target, name, fn, options) => { target.addEventListener(name, fn, options); listeners.push(() => target.removeEventListener(name, fn, options)); };
   const layer = h('div','card-layer'); world.append(layer);
   const picker = h('input'); picker.type='file'; picker.accept='image/png,image/jpeg,image/webp,image/gif,image/bmp,image/avif'; picker.multiple=true; picker.hidden=true; document.body.append(picker);
-  let selected=null, editing=null, editFresh=false, editBefore='', drag=null, tool=null, mapId=null, colorOpen=null, pickFor=null;
+  let selected=null, editing=null, editFresh=false, editBefore='', drag=null, resize=null, tool=null, mapId=null, colorOpen=null, pickFor=null;
   const imageHover={over:null};
 
   const pointAt = (x, y) => { const r=canvas.getBoundingClientRect(), v=getView(); return {x:(x-r.left-v.x)/v.k, y:(y-r.top-v.y)/v.k}; };
   const cardEl = id => id ? layer.querySelector(`.card[data-id="${CSS.escape(id)}"]`) : null;
   function boxOf(el) { const r=el.getBoundingClientRect(), p=pointAt(r.left,r.top), k=getView().k; return {id:el.dataset.id, x:p.x, y:p.y, w:r.width/k, h:r.height/k}; }
   function locate(map, id) {
-    for(const [i,card] of (map?.cards||[]).entries()) {
-      if(card.id===id) return {list:map.cards, i, card, parent:null};
-      const j=CONTAINERS.includes(card.type) ? card.cards.findIndex(c=>c.id===id) : -1;
-      if(j>=0) return {list:card.cards, i:j, card:card.cards[j], parent:card};
-    }
-    return null;
+    return (function walk(list, parent) {
+      for(const [i,card] of list.entries()) {
+        if(card.id===id) return {list, i, card, parent};
+        const found=card.cards && walk(card.cards, card); if(found) return found;
+      }
+      return null;
+    })(map?.cards||[], null);
   }
+  const descendants = card => [card, ...(card.cards||[]).flatMap(descendants)];
   function blank(type) {
     const card={id:uid('c'), type};
     if(type==='note') card.text='';
     else if(type==='link') Object.assign(card,{url:'',title:''});
     else if(type==='todo') Object.assign(card,{title:'',items:[{id:uid('i'),text:'',done:false}]});
+    else if(type==='board') { const page=createPage(); if(!page) return null; Object.assign(card,{title:'',mapId:page,w:160,h:150}); }
     else Object.assign(card,{title:'',cards:[]}, type==='folder'?{open:false}:{});
     return card;
   }
   function tidy(card) {
     if(card.type==='link') card.url=safeUrl(card.url.trim())||card.url.trim();
     if(card.type==='todo') card.items=card.items.filter(item=>item.text.trim());
+    if(card.type==='note') card.text=card.text.replace(/(\n?[ \t]*\[ \][ \t]*)+$/,'');
     if('title' in card) card.title=card.title.trim();
   }
 
   /* ---------- render ---------- */
   function build(card, nested) {
     const edit=editing===card.id, closed=card.type==='folder' && !card.open;
-    const el=h('div',`card card-${card.type}`+(closed?' closed':'')+(selected===card.id?' selected':'')+(edit?' editing':''));
-    el.dataset.id=card.id;
-    if(!nested) { el.style.left=card.x+'px'; el.style.top=card.y+'px'; }
+    const el=h('div',`card card-${card.type}`+(closed?' closed':'')+(card.collapsed?' collapsed':'')+(card.frame===false?' plain':'')+(selected===card.id?' selected':'')+(edit?' editing':''));
+    el.dataset.id=card.id; el.dataset.type=card.type;
+    if(!nested) { el.style.left=card.x+'px'; el.style.top=card.y+'px'; el.style.zIndex=1+(card.z||0); }
+    if(card.type==='board') { if(!nested) el.style.width=(card.w||160)+'px'; el.style.height=(card.h||150)+'px'; }
+    else if(SIZED.includes(card.type)) { if(card.w && !nested) el.style.width=card.w+'px'; if(card.h && !card.collapsed) el.style.minHeight=card.h+'px'; }
     if(card.type==='note') {
       const paper=h('div','note-paper'), color=NOTE_COLORS[card.color];
       if(color) { paper.style.setProperty('--nb',color[0]); paper.classList.add('tinted'); }
-      paper.append(edit ? field('textarea','note-input',card.text,'寫點什麼…',{field:'text'}) : textBlock('note-text',card.text,'空白筆記'));
+      if(edit) paper.append(field('textarea','note-input',card.text,'寫點什麼…（[ ] 開頭變成待辦，``` 包住變成程式碼）',{field:'text'}));
+      else {
+        paper.append(card.collapsed ? collapsedLine(card) : noteBody(card));
+        paper.append(button('note-fold',card.collapsed?'展開筆記':'收合筆記',icon(card.collapsed?'chevron-down':'chevron-up'),{head:'collapse'}));
+      }
+      if(card.cards?.length && !card.collapsed) { const embeds=h('div','note-embeds'); for(const child of card.cards) embeds.append(build(child,true)); paper.append(embeds); }
       el.append(paper);
+    }
+    else if(card.type==='board') {
+      const info=pageInfo(card.mapId), tile=h('div','board-tile'); tile.innerHTML=folderIcon(card.color,64);
+      el.append(tile, edit ? field('input','board-title',card.title,'頁面名稱',{field:'title'}) : textBlock('board-title',info?.title||card.title,'未命名頁面'), h('div','board-meta',info?`${info.count} 個物件`:'頁面已刪除'));
     }
     else if(card.type==='image') {
       const img=h('img','card-img'); img.alt='圖片'; img.draggable=false; img.addEventListener('load',onChange,{once:true}); img.src=card.src; el.append(img);
@@ -118,25 +166,73 @@ export function setupCards({ canvas, world, rail, getMap, getView, uid, snapshot
       const head=h('div','column-head'), body=h('div','column-body'), folder=card.type==='folder';
       if(folder) { const mini=h('span','folder-mini'); mini.innerHTML=FOLDER_ICON; head.append(mini); }
       head.append(edit ? field('input','column-title',card.title,folder?'資料夾名稱':'欄位名稱',{field:'title'}) : textBlock('column-title',card.title,folder?'未命名資料夾':'未命名欄位'), h('span','column-count',String(card.cards.length)));
-      if(canEdit()) head.append(button('head-btn','加入圖片',icon('image'),{head:'add-image'}));
+      if(canEdit() && !card.collapsed) head.append(button('head-btn','加入圖片',icon('image'),{head:'add-image'}));
       if(folder) head.append(button('head-btn','收合資料夾',icon('chevron-up'),{head:'folder-toggle'}));
-      for(const child of card.cards) body.append(build(child,true));
-      if(!card.cards.length) body.append(h('div','column-empty',folder?'把筆記拖進這裡':'把卡片或圖片拖進這裡'));
-      el.append(head,body);
+      else head.append(button('head-btn',card.collapsed?'展開欄位':'收合欄位',icon(card.collapsed?'chevron-down':'chevron-up'),{head:'collapse'}));
+      el.append(head);
+      if(!card.collapsed) {
+        for(const child of card.cards) body.append(build(child,true));
+        if(!card.cards.length) body.append(h('div','column-empty',folder?'把筆記拖進這裡':'把卡片或圖片拖進這裡'));
+        el.append(body);
+      }
     }
-    if(selected===card.id && !edit && canEdit()) el.append(actions(card));
+    if(selected===card.id && !edit && canEdit()) {
+      if(card.type==='board' || SIZED.includes(card.type)) { const grip=h('div','card-resize'); grip.title='拖曳調整大小'; el.append(grip); }
+      el.append(actions(card));
+    }
     return el;
+  }
+  // A collapsed note shows only its first non-empty line.
+  function collapsedLine(card) {
+    const lines=(card.text||'').split('\n').filter(l=>l.trim() && !FENCE.test(l)), first=lines[0]?.replace(TODO_LINE,'$2');
+    const more=lines.length>1 || card.cards?.length;
+    return h('div','note-text note-collapsed'+(first?'':' ph'),(first||'空白筆記')+(more?' …':''));
+  }
+  function noteBody(card) {
+    if(!card.text) return h('div','note-text ph','空白筆記');
+    const box=h('div','note-text');
+    let code=null;
+    card.text.split('\n').forEach((line,i)=>{
+      const fence=FENCE.exec(line);
+      if(code) { if(fence && !fence[1]) code=null; else code.add(line); return; }
+      if(fence) { code=codeBlock(fence[1],i); box.append(code.el); return; }
+      const m=TODO_LINE.exec(line);
+      if(!m) { box.append(h('div','note-line',line||'\u200b')); return; }
+      const done=m[1]!==' ', row=h('div','note-todo'+(done?' done':'')), check=button('todo-check',done?'標為未完成':'標為完成',icon('check-lg'),{noteCheck:String(i)});
+      check.disabled=!canEdit(); check.setAttribute('aria-pressed',String(done));
+      row.append(check,h('span','note-todo-text',m[2])); box.append(row);
+    });
+    return box;
+  }
+  function codeBlock(lang, start) {
+    const el=h('div','note-code'), head=h('div','code-head'), body=h('div','code-body');
+    let n=0;
+    head.append(h('span','code-lang',lang||'code'), button('code-copy','複製程式碼',icon('copy'),{codeCopy:String(start)}));
+    el.append(head,body);
+    return { el, add(line) {
+      const row=h('div','code-line'), text=h('span','code-text');
+      if(line) text.append(...highlightCode(line)); else text.textContent='\u200b';
+      row.append(h('span','code-num',String(++n)),text); body.append(row);
+    } };
+  }
+  function codeAt(text, start) {
+    const lines=text.split('\n'), out=[];
+    for(let i=start+1;i<lines.length;i++) { const f=FENCE.exec(lines[i]); if(f && !f[1]) break; out.push(lines[i]); }
+    return out.join('\n');
   }
   function actions(card) {
     const bar=h('div','card-actions');
     if(colorOpen===card.id) {
+      const board=card.type==='board', palette=board?FOLDER_COLORS:NOTE_COLORS, key=board?'boardColor':'noteColor';
       bar.classList.add('colors');
-      bar.append(button('note-swatch'+(card.color?'':' on'),'預設（跟隨主題）','',{noteColor:'default'}));
-      for(const [key,[hex,name]] of Object.entries(NOTE_COLORS)) { const b=button('note-swatch'+(card.color===key?' on':''),name,'',{noteColor:key}); b.style.setProperty('--c',hex); bar.append(b); }
+      const plain=button('note-swatch'+(card.color?'':' on'),'預設（跟隨主題）','',{[key]:'default'}); if(board) plain.style.setProperty('--c','var(--folder-front)'); bar.append(plain);
+      for(const [k,[hex,name]] of Object.entries(palette)) { const b=button('note-swatch'+(card.color===k?' on':''),name,'',{[key]:k}); b.style.setProperty('--c',hex); bar.append(b); }
       return bar;
     }
+    if(card.type==='board') bar.append(button('','開啟頁面',icon('box-arrow-in-up-right'),{cardAct:'page'}), ...(viewPage?[button('','在側邊檢視內容',icon('layout-sidebar-reverse'),{cardAct:'view'})]:[]), button('',card.frame===false?'顯示外框':'隱藏外框',icon(card.frame===false?'square':'bounding-box'),{cardAct:'frame'}), button('','資料夾顏色',icon('palette'),{cardAct:'color'}));
+    if(card.type==='note' || card.type==='column') bar.append(button('',card.collapsed?'展開':'收合',icon(card.collapsed?'arrows-expand':'arrows-collapse'),{cardAct:'collapse'}));
     if(card.type==='folder') bar.append(button('',card.open?'收合':'開啟',icon(card.open?'folder2':'folder2-open'),{cardAct:'open'}));
-    if(card.type==='note') bar.append(button('','便利貼顏色',icon('palette'),{cardAct:'color'}));
+    if(card.type==='note') bar.append(button('','加入待辦',icon('check2-square'),{cardAct:'todo'}), button('','插入程式碼',icon('code-slash'),{cardAct:'code'}), button('','便利貼顏色',icon('palette'),{cardAct:'color'}));
     if(card.type!=='image') bar.append(button('','編輯',icon('pencil'),{cardAct:'edit'}));
     bar.append(button('','刪除',icon('trash'),{cardAct:'delete'}));
     return bar;
@@ -164,51 +260,70 @@ export function setupCards({ canvas, world, rail, getMap, getView, uid, snapshot
     const map=getMap(); if(!map || !canEdit()) return;
     if(editing) commit();
     if(type==='mindmap') { if(selected) { selected=null; render(); } createTree(at); return; }
-    const card=blank(type); snapshot(); map.cards ||= [];
-    const box=containerId && nestable(type) && map.cards.find(c=>c.id===containerId && CONTAINERS.includes(c.type));
-    if(box) box.cards.splice(index ?? box.cards.length, 0, card);
-    else { card.x=Math.round(at.x); card.y=Math.round(at.y); map.cards.push(card); }
+    const card=blank(type); if(!card) return;
+    snapshot(); map.cards ||= [];
+    const box=containerId && locate(map,containerId)?.card;
+    if(box && accepts(box.type,type)) { box.cards ||= []; box.cards.splice(index ?? box.cards.length, 0, card); }
+    else { card.x=Math.round(at.x); card.y=Math.round(at.y); card.z=nextZ(); map.cards.push(card); }
     clearSelection(); selected=card.id; editing=card.id; editFresh=true;
     save(map.id); refresh(true); focusEditor(type==='todo'?'[data-item]':null);
+    if(type==='board') pagesChanged();
   }
   function createAtCenter(type) {
     const v=getView(), c={x:(canvas.clientWidth/2-v.x)/v.k, y:(canvas.clientHeight/2-v.y)/v.k};
     if(type==='mindmap') return create(type,null);
-    const w={column:280, folder:170}[type]||240, n=(getMap()?.cards||[]).length%6;
+    const w={column:280, folder:170, board:160}[type]||240, n=(getMap()?.cards||[]).length%6;
     create(type, {x:c.x-w/2+n*24, y:c.y-60+n*24});
   }
   function startEdit(id) {
     const loc=locate(getMap(),id); if(!loc || !canEdit() || loc.card.type==='image') return;
     if(editing) commit();
+    if(loc.card.type==='board') loc.card.title=pageInfo(loc.card.mapId)?.title ?? loc.card.title;
     clearSelection(); selected=id; editing=id; editFresh=false; editBefore=JSON.stringify(loc.card);
     snapshot(); refresh(true); focusEditor();
   }
   function commit() {
     if(!editing) return; const id=editing; editing=null;
     const map=getMap(), loc=locate(map,id);
-    if(loc) { tidy(loc.card); if(!editFresh && JSON.stringify(loc.card)===editBefore) dropSnapshot(); else save(map.id); }
+    if(loc) {
+      tidy(loc.card);
+      if(loc.card.type==='board') renamePage(loc.card.mapId, loc.card.title||'未命名頁面');
+      if(!editFresh && JSON.stringify(loc.card)===editBefore) dropSnapshot(); else save(map.id);
+    }
     refresh();
   }
   function remove(id) {
     const map=getMap(), loc=locate(map,id); if(!loc || !canEdit()) return;
     snapshot(); loc.list.splice(loc.i,1);
-    const gone=new Set([id, ...(loc.card.cards||[]).map(c=>c.id)]);
+    const removed=descendants(loc.card), gone=new Set(removed.map(c=>c.id));
     map.relations=(map.relations||[]).filter(r=>!gone.has(r.from) && !gone.has(r.to));
     if(gone.has(editing)) editing=null;
     selected=null; save(map.id); refresh();
+    if(removed.some(c=>c.type==='board')) { pagesChanged(); toast('頁面卡片已移除，頁面本身移到側欄'); }
   }
   function toggleFolder(card) { card.open=!card.open; if(canEdit()) save(getMap().id); refresh(); }
-  // Closed folders have no body, so drops append to the end.
+  function toggleCollapse(card) { if(card.collapsed) delete card.collapsed; else card.collapsed=true; if(canEdit()) save(getMap().id); refresh(); }
+  function openPageOf(card) {
+    if(editing) commit();
+    if(!pageInfo(card.mapId)) { toast('這個頁面已被刪除'); return; }
+    openPage(card.mapId);
+  }
+  // Closed folders, collapsed columns and notes without embeds have no body, so drops append to the end.
   function insertIndex(box, y) {
-    const body=box.querySelector(':scope > .column-body'); if(!body) return Infinity;
+    const body=box.querySelector(':scope > .column-body, :scope > .note-paper > .note-embeds'); if(!body) return Infinity;
     return [...body.querySelectorAll(':scope > .card:not(.dragging)')].filter(c=>{ const r=c.getBoundingClientRect(); return r.top+r.height/2<y; }).length;
   }
   function highlight(state, box) { if(state.over!==box) { state.over?.classList.remove('drop'); box?.classList.add('drop'); state.over=box; } }
   function containerAt(x, y) { return document.elementFromPoint(x,y)?.closest?.('.card-column,.card-folder') || null; }
+  // The innermost card under the pointer that accepts this type (a page dropped on a note in a column lands in the note).
+  function containerFor(hit, type) {
+    for(let el=hit.closest('.card'); el; el=el.parentElement?.closest('.card')) if(accepts(el.dataset.type,type)) return el;
+    return null;
+  }
   function dropTarget(e, type) {
     const hit=document.elementFromPoint(e.clientX,e.clientY);
     if(!hit || !canvas.contains(hit) || hit.closest('.zoombar,.asset-panel,.nodebar,.empty-state')) return null;
-    return {box: nestable(type) ? hit.closest('.card-column,.card-folder') : null};
+    return {box: containerFor(hit,type)};
   }
   function dropToast(box, card) { if(box.type==='folder' && !box.open) toast(`已放進資料夾「${box.title||'未命名資料夾'}」`); return card; }
 
@@ -219,8 +334,17 @@ export function setupCards({ canvas, world, rail, getMap, getView, uid, snapshot
     const el=e.target.closest('.card');
     if(!el) { if(selected && !e.target.closest('.zoombar,.asset-panel')) { selected=null; render(); } return; }
     const id=el.dataset.id;
+    if(e.target.closest('.card-resize') && canEdit()) {
+      e.preventDefault(); const card=locate(getMap(),id)?.card;
+      if(card) { const b=boxOf(el); resize={id, pointer:e.pointerId, sx:e.clientX, sy:e.clientY, w:card.w||b.w, h:card.type==='board'?card.h||b.h:b.h, min:MIN_SIZE[card.type], moved:false}; }
+      return;
+    }
     if(e.target.closest('a,button,input,textarea')) return;
-    if(!canEdit()) { const loc=locate(getMap(),id); if(loc?.card.type==='folder' && !loc.card.open) toggleFolder(loc.card); return; }
+    if(!canEdit()) {
+      const card=locate(getMap(),id)?.card;
+      if(card?.type==='folder' && !card.open) toggleFolder(card); else if(card?.type==='board') openPageOf(card);
+      return;
+    }
     e.preventDefault();
     if(editing===id) return;
     if(editing) commit();
@@ -232,13 +356,24 @@ export function setupCards({ canvas, world, rail, getMap, getView, uid, snapshot
     const map=getMap(), loc=locate(map,drag.id), el=cardEl(drag.id);
     if(!loc || !el) { drag=null; return; }
     const b=boxOf(el); snapshot();
-    loc.list.splice(loc.i,1); map.cards.push(loc.card);
+    loc.list.splice(loc.i,1); map.cards.push(loc.card); loc.card.z=nextZ();
     if(loc.parent) Object.assign(loc.card,{x:b.x, y:b.y});
     const p=pointAt(e.clientX,e.clientY);
     Object.assign(drag,{moved:true, map:map.id, card:loc.card, dx:p.x-b.x, dy:p.y-b.y});
     render(); drag.el=cardEl(drag.id); drag.el.classList.add('dragging');
   }
   on(window,'pointermove',e=>{
+    if(resize && e.pointerId===resize.pointer) {
+      const card=locate(getMap(),resize.id)?.card, el=cardEl(resize.id), k=getView().k; if(!card || !el) return;
+      if(!resize.moved) { snapshot(); resize.moved=true; }
+      const [minW,minH]=resize.min, nested=!!el.parentElement.closest('.card');
+      if(!nested) card.w=Math.round(Math.min(1200,Math.max(minW,resize.w+(e.clientX-resize.sx)/k)));
+      card.h=Math.round(Math.min(1200,Math.max(minH,resize.h+(e.clientY-resize.sy)/k)));
+      if(!nested) el.style.width=card.w+'px';
+      if(card.type==='board') el.style.height=card.h+'px'; else if(!card.collapsed) el.style.minHeight=card.h+'px';
+      onChange();
+      return;
+    }
     if(tool && e.pointerId===tool.pointer) {
       if(!tool.ghost) {
         if(Math.hypot(e.clientX-tool.sx,e.clientY-tool.sy)<5) return;
@@ -257,6 +392,7 @@ export function setupCards({ canvas, world, rail, getMap, getView, uid, snapshot
     onChange();
   });
   function end(e) {
+    if(resize && e.pointerId===resize.pointer) { const r=resize; resize=null; if(r.moved) save(getMap().id); return; }
     if(tool && e.pointerId===tool.pointer) {
       const t=tool; tool=null; t.over?.classList.remove('drop');
       if(!t.ghost) { if(e.type==='pointerup') createAtCenter(t.type); return; }
@@ -269,16 +405,19 @@ export function setupCards({ canvas, world, rail, getMap, getView, uid, snapshot
     if(!drag || e.pointerId!==drag.pointer) return;
     const d=drag; drag=null;
     if(!d.moved) {
-      if(d.was && e.type==='pointerup') { const card=locate(getMap(),d.id)?.card; if(card?.type==='folder') toggleFolder(card); else startEdit(d.id); }
+      if(d.was && e.type==='pointerup') {
+        const card=locate(getMap(),d.id)?.card;
+        if(card?.type==='folder') toggleFolder(card); else if(card?.type==='board') openPageOf(card); else startEdit(d.id);
+      }
       return;
     }
     d.over?.classList.remove('drop');
     const map=getMap(); if(map?.id!==d.map) return;
-    const box=d.over && map.cards.find(c=>c.id===d.over.dataset.id);
-    if(box && e.type==='pointerup') {
+    const box=d.over && locate(map,d.over.dataset.id)?.card;
+    if(box && box!==d.card && e.type==='pointerup') {
       const index=insertIndex(d.over,e.clientY);
-      map.cards.splice(map.cards.indexOf(d.card),1); delete d.card.x; delete d.card.y;
-      box.cards.splice(index,0,dropToast(box,d.card));
+      map.cards.splice(map.cards.indexOf(d.card),1); delete d.card.x; delete d.card.y; delete d.card.z;
+      box.cards ||= []; box.cards.splice(index,0,dropToast(box,d.card));
     }
     save(map.id); refresh();
   }
@@ -306,6 +445,18 @@ export function setupCards({ canvas, world, rail, getMap, getView, uid, snapshot
     const f=e.target;
     if(e.key==='Escape' || (e.key==='Enter' && (e.metaKey||e.ctrlKey))) { e.preventDefault(); commit(); canvas.focus({preventScroll:true}); return; }
     const loc=locate(getMap(),editing); if(!loc) return;
+    // Tab indents inside the note editor so code can be typed naturally.
+    if(f.tagName==='TEXTAREA' && e.key==='Tab' && !e.shiftKey) {
+      e.preventDefault(); f.setRangeText('  ',f.selectionStart,f.selectionEnd,'end'); loc.card.text=f.value; onChange(); return;
+    }
+    if(f.tagName==='TEXTAREA' && e.key==='Enter' && !e.shiftKey) {
+      // Enter on a to-do line starts the next one; Enter on an empty to-do ends the list.
+      const pos=f.selectionStart, start=f.value.lastIndexOf('\n',pos-1)+1, m=TODO_LINE.exec(f.value.slice(start,pos));
+      if(!m) return;
+      e.preventDefault();
+      if(m[2].trim()) f.setRangeText('\n[ ] ',pos,f.selectionEnd,'end'); else f.setRangeText('',start,pos,'end');
+      loc.card.text=f.value; autosize(f); onChange(); return;
+    }
     if(f.dataset.item) {
       const items=loc.card.items, i=items.findIndex(x=>x.id===f.dataset.item);
       if(e.key==='Enter') { e.preventDefault(); const item={id:uid('i'),text:'',done:false}; items.splice(i+1,0,item); render(true); focusEditor(`[data-item="${item.id}"]`); }
@@ -320,6 +471,13 @@ export function setupCards({ canvas, world, rail, getMap, getView, uid, snapshot
     if(!loc) return;
     const map=getMap(), card=loc.card;
     if(b.dataset.head==='folder-toggle' || b.dataset.cardAct==='open') return toggleFolder(card);
+    if(b.dataset.head==='collapse' || b.dataset.cardAct==='collapse') return toggleCollapse(card);
+    if(b.dataset.cardAct==='page') return openPageOf(card);
+    if(b.dataset.cardAct==='view') { if(pageInfo(card.mapId)) viewPage(card.mapId); else toast('這個頁面已被刪除'); return; }
+    if(b.dataset.codeCopy!==undefined) {
+      navigator.clipboard?.writeText(codeAt(card.text||'',+b.dataset.codeCopy)).then(()=>toast('已複製程式碼'),()=>toast('無法複製，請手動選取'));
+      return;
+    }
     if(!canEdit()) return;
     if(b.dataset.check) {
       const item=card.items.find(i=>i.id===b.dataset.check); if(!item) return;
@@ -329,16 +487,40 @@ export function setupCards({ canvas, world, rail, getMap, getView, uid, snapshot
     else if(b.dataset.addItem!==undefined) { const item={id:uid('i'),text:'',done:false}; card.items.push(item); render(true); focusEditor(`[data-item="${item.id}"]`); }
     else if(b.dataset.head==='add-image') { pickFor=card.id; picker.value=''; picker.click(); }
     else if(b.dataset.cardAct==='color') { colorOpen=card.id; render(); }
+    else if(b.dataset.cardAct==='frame') { snapshot(); if(card.frame===false) delete card.frame; else card.frame=false; save(map.id); refresh(); }
+    else if(b.dataset.boardColor) {
+      snapshot(); if(b.dataset.boardColor==='default') delete card.color; else card.color=b.dataset.boardColor;
+      colorOpen=null; save(map.id); refresh();
+    }
     else if(b.dataset.noteColor) {
       snapshot(); if(b.dataset.noteColor==='default') delete card.color; else card.color=b.dataset.noteColor;
       colorOpen=null; save(map.id); refresh();
+    }
+    else if(b.dataset.noteCheck!==undefined) {
+      const lines=card.text.split('\n'), i=+b.dataset.noteCheck; if(!TODO_LINE.test(lines[i]||'')) return;
+      snapshot(); lines[i]=lines[i].replace(/\[( |x|X)\]/,t=>t==='[ ]'?'[x]':'[ ]'); card.text=lines.join('\n'); save(map.id); refresh();
+    }
+    else if(b.dataset.cardAct==='todo') {
+      startEdit(card.id);
+      const ta=cardEl(card.id)?.querySelector('textarea'); if(!ta) return;
+      ta.value+=(ta.value && !ta.value.endsWith('\n') ? '\n' : '')+'[ ] '; card.text=ta.value;
+      autosize(ta); ta.focus(); ta.setSelectionRange(ta.value.length,ta.value.length); onChange();
+    }
+    else if(b.dataset.cardAct==='code') {
+      startEdit(card.id);
+      const ta=cardEl(card.id)?.querySelector('textarea'); if(!ta) return;
+      // Code needs room: widen a default-width note that sits directly on the canvas.
+      if(!card.w && !loc.parent) { card.w=380; cardEl(card.id).style.width='380px'; }
+      ta.value+=(ta.value && !ta.value.endsWith('\n') ? '\n' : '')+'```js\n\n```'; card.text=ta.value;
+      const caret=ta.value.length-4; autosize(ta); ta.focus(); ta.setSelectionRange(caret,caret); onChange();
     }
     else if(b.dataset.cardAct==='edit') startEdit(card.id);
     else if(b.dataset.cardAct==='delete') remove(card.id);
   });
   on(layer,'dblclick',e=>{
     const el=e.target.closest('.card'); if(!el || editing===el.dataset.id || e.target.closest('a,button')) return;
-    if(locate(getMap(),el.dataset.id)?.card.type!=='folder') startEdit(el.dataset.id);
+    const card=locate(getMap(),el.dataset.id)?.card;
+    if(card?.type==='board') openPageOf(card); else if(card?.type!=='folder') startEdit(el.dataset.id);
   });
   on(picker,'change',async()=>{
     const files=[...picker.files], map=getMap(), id=pickFor; let first=true;

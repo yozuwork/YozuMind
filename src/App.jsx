@@ -37,6 +37,7 @@ function Toolbar() { return (<header className="topbar">
       <button className="icon-btn" id="openSide" title="打開側欄" aria-label="打開側欄">
         <i className="bi bi-list" aria-hidden="true"></i>
       </button>
+      <nav className="crumbs" id="crumbs" aria-label="頁面路徑" hidden></nav>
       <button className="crumb-icon" id="crumbIcon" title="更換便利貼顏色" aria-label="更換便利貼顏色"></button>
       <input className="title-input" id="title" type="text" placeholder="未命名心智圖" aria-label="心智圖名稱" />
       <span className="ro-badge" id="roBadge" hidden>唯讀</span>
@@ -65,6 +66,10 @@ function ToolRail() { return (<nav className="toolrail" id="toolrail" aria-label
           <span className="rail-label">{label}</span>
         </button>
       ))}
+      <button className="rail-tool" id="drawBtn" title="塗鴉：筆、螢光筆、橡皮擦與套索">
+        <span className="rail-icon"><i className="bi bi-pencil" aria-hidden="true"></i></span>
+        <span className="rail-label">塗鴉</span>
+      </button>
       <span className="rail-sep" aria-hidden="true"></span>
       <button className="rail-tool" id="relationBtn" title="關聯線：從物件拖到目標，或點選後選擇線型">
         <span className="rail-icon"></span>
@@ -82,6 +87,8 @@ function Canvas() { return (<div className="canvas" id="canvas" tabIndex="0" ari
           <span className="sep" data-for="color"></span>
           <button data-act="color" title="分支顏色"><span className="swatch-dot" id="curSwatch"></span></button>
           <button data-act="collapse" title="收合／展開 (空白鍵)"><i className="bi bi-chevron-down" aria-hidden="true"></i></button>
+          <button data-act="page" title="建立獨立頁面"><i className="bi bi-folder-plus" aria-hidden="true"></i></button>
+          <button data-act="view" title="在側邊檢視內容"><i className="bi bi-layout-sidebar-reverse" aria-hidden="true"></i><span className="lbl">檢視內容</span></button>
           <span className="sep" data-for="del"></span>
           <button data-act="delete" className="del" title="刪除 (Delete)"><i className="bi bi-trash" aria-hidden="true"></i></button>
         </div>
@@ -115,6 +122,18 @@ function Canvas() { return (<div className="canvas" id="canvas" tabIndex="0" ari
       </div>
     </div>); }
 
+// Side viewer for a page: an embedded copy of the app showing just that page.
+function ViewPanel() { return (<aside className="view-panel" id="viewPanel" aria-label="檢視內容" hidden>
+      <div className="view-head">
+        <i className="bi bi-folder2-open" aria-hidden="true"></i>
+        <span className="view-title" id="viewTitle"></span>
+        <button className="icon-btn" id="viewOpen" title="在主畫面開啟" aria-label="在主畫面開啟"><i className="bi bi-box-arrow-in-up-right" aria-hidden="true"></i></button>
+        <button className="icon-btn" id="viewFull" title="滿版" aria-label="滿版"><i className="bi bi-arrows-fullscreen" aria-hidden="true"></i></button>
+        <button className="icon-btn" id="viewClose" title="關閉 (Esc)" aria-label="關閉"><i className="bi bi-x-lg" aria-hidden="true"></i></button>
+      </div>
+      <iframe className="view-frame" id="viewFrame" title="頁面內容"></iframe>
+    </aside>); }
+
 export default function App() {
   useEffect(() => initializeMindMap(), []);
   return (<><div className="app" id="app">
@@ -129,6 +148,7 @@ export default function App() {
       <Canvas />
     </div>
   </main>
+  <ViewPanel />
 </div>
 
 <div className="pop" id="pageMenu" role="menu">
@@ -139,9 +159,13 @@ export default function App() {
 </div>
 <div className="pop" id="folderMenu" role="menu">
   <button className="mi" data-f="rename"><i className="bi bi-pencil" aria-hidden="true"></i>重新命名</button>
+  <button className="mi" data-f="sub"><i className="bi bi-folder-plus" aria-hidden="true"></i>新增子資料夾</button>
+  <button className="mi" data-f="move"><i className="bi bi-folder-symlink" aria-hidden="true"></i>移到資料夾</button>
+  <button className="mi" data-f="color"><i className="bi bi-palette" aria-hidden="true"></i>更換顏色</button>
   <button className="mi danger" data-f="del"><i className="bi bi-trash" aria-hidden="true"></i>刪除資料夾</button>
 </div>
 <div className="pop" id="movePop" role="menu"></div>
+<div className="pop" id="folderColorPop"><div className="icon-grid color-grid" id="folderColorGrid"></div></div>
 <div className="pop" id="iconPop"><div className="icon-grid color-grid" id="iconGrid"></div></div>
 <div className="pop share-pop" id="sharePop">
   <h3>分享這張心智圖</h3>

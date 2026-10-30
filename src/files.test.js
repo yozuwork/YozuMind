@@ -106,3 +106,61 @@ test('a board whose mind maps were all deleted keeps its cards', () => {
   assert.equal(restored.root, null);
   assert.equal(restored.cards[0].text, '留著');
 });
+
+test('nested folders keep their parent and icon color', () => {
+  const text = serializeMaps([map], [{ id:'a', name:'外層', createdAt:1, color:'blue' }, { id:'b', name:'內層', parentId:'a', createdAt:2, color:'neon' }]);
+  assert.deepEqual(parseFolders(text), [
+    { id:'a', name:'外層', open:true, createdAt:1, color:'blue' },
+    { id:'b', name:'內層', open:true, createdAt:2, parentId:'a' },
+  ]);
+});
+
+test('freehand strokes survive a round trip and bad strokes are rejected', () => {
+  const strokes = [{ id:'s', tool:'highlighter', color:'#eab308', width:16, points:[[0,0],[10.5,4]] }, { id:'t', tool:'pen', color:'ink', width:2, points:[[3,3]] }];
+  const [restored] = parseMaps(serializeMaps([{ ...map, strokes }]), newId);
+  assert.deepEqual(restored.strokes.map(({ id, ...s }) => s), strokes.map(({ id, ...s }) => s));
+  assert.notEqual(restored.strokes[0].id, 's');
+  assert.deepEqual(parseMaps(serializeMaps([map]), newId)[0].strokes, []);
+  assert.throws(() => parseMaps(JSON.stringify([{ ...map, strokes:[{ tool:'pen', color:'red', width:2, points:[[0,0]] }] }]), newId));
+  assert.throws(() => parseMaps(JSON.stringify([{ ...map, strokes:[{ tool:'pen', color:'ink', width:2, points:[[0]] }] }]), newId));
+});
+
+test('drawn shapes keep their geometry and fill', () => {
+  const strokes = [
+    { tool:'rect', color:'#e5484d', width:4, fill:'#eab308', points:[[0,0],[120,40]] },
+    { tool:'arrow', color:'ink', width:2, fill:'#eab308', points:[[5,5],[50,60]] },
+  ];
+  const [restored] = parseMaps(serializeMaps([{ ...map, strokes }]), newId);
+  assert.equal(restored.strokes[0].fill, '#eab308');
+  assert.deepEqual(restored.strokes[0].points, [[0,0],[120,40]]);
+  assert.equal('fill' in restored.strokes[1], false);
+  assert.throws(() => parseMaps(JSON.stringify([{ ...map, strokes:[{ tool:'rect', color:'ink', width:2, points:[[0,0]] }] }]), newId));
+});
+
+test('stacking order and note to-do text survive a round trip', () => {
+  const [restored] = parseMaps(serializeMaps([{ ...map,
+    images:[{ id:'i', src:'data:image/png;base64,AAAA', x:0, y:0, w:10, h:10, z:3 }],
+    cards:[{ id:'n', type:'note', x:0, y:0, z:5, text:'清單\n[x] 買牛奶\n[ ] 寫報告' }],
+    strokes:[{ tool:'pen', color:'ink', width:2, z:4, points:[[0,0]] }] }]), newId);
+  assert.deepEqual([restored.images[0].z, restored.cards[0].z, restored.strokes[0].z], [3, 5, 4]);
+  assert.equal(restored.cards[0].text, '清單\n[x] 買牛奶\n[ ] 寫報告');
+});
+
+test('page cards, note embeds and collapsed state follow their pages through an export', () => {
+  const parent = { ...map, id:'p', cards:[
+    { id:'b', type:'board', x:0, y:0, mapId:'child', title:'子頁', w:220, h:180, frame:false, color:'blue' },
+    { id:'n', type:'note', x:0, y:0, text:'筆記', collapsed:true, cards:[{ id:'b2', type:'board', mapId:'child' }] },
+    { id:'c', type:'column', x:0, y:0, title:'欄', collapsed:true, cards:[{ id:'b3', type:'board', mapId:'elsewhere' }] },
+  ] };
+  const child = { ...map, id:'child', title:'子頁', parentId:'p' };
+  const [p, c] = parseMaps(serializeMaps([parent, child]), newId);
+  const [board, note, column] = p.cards;
+  assert.equal(board.mapId, c.id);
+  assert.equal(c.parentId, p.id);
+  assert.deepEqual([board.w, board.h, board.frame, board.color], [220, 180, false, 'blue']);
+  assert.equal(note.collapsed, true);
+  assert.equal(note.cards[0].mapId, c.id);
+  assert.equal(column.collapsed, true);
+  assert.equal(column.cards[0].mapId, 'elsewhere');
+  assert.throws(() => parseMaps(JSON.stringify([{ ...map, cards:[{ type:'note', x:0, y:0, text:'', cards:[{ type:'link', url:'' }] }] }]), newId));
+});
