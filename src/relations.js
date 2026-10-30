@@ -104,7 +104,7 @@ function heads(g, arrow, size) {
   return out;
 }
 
-export function setupRelations({ canvas, world, button, getMap, getView, getBox, uid, snapshot, dropSnapshot, save, toast, canEdit, clearSelection }) {
+export function setupRelations({ canvas, world, button, getMap, getView, getBox, uid, snapshot, dropSnapshot, save, toast, canEdit, clearSelection, canPin, pin }) {
   const listeners = [];
   const on = (target, name, fn, options) => { target.addEventListener(name, fn, options); listeners.push(() => target.removeEventListener(name, fn, options)); };
   const svgEl = (name, attrs={}) => { const el=document.createElementNS(NS,name); for(const k in attrs) el.setAttribute(k,attrs[k]); return el; };
@@ -118,7 +118,7 @@ export function setupRelations({ canvas, world, button, getMap, getView, getBox,
     +Object.entries(STYLES).map(([s,n])=>btn('style:'+s,n,ICONS[s])).join('')+'<span class="sep"></span>'
     +btn('arrow:start','起點箭頭',ICONS.start)+btn('arrow:end','終點箭頭',ICONS.end)+'<span class="sep"></span>'
     +Object.entries(LINE_TYPES).map(([t,n])=>btn('type:'+t,n,ICONS[t])).join('')+'<span class="sep"></span>'
-    +btn('delete','刪除 (Delete)',bi('trash'),'del')+'</div><div class="swatches">'
+    +btn('pin','轉成掛載：節點收合時一起收起',bi('pin-angle-fill'))+btn('delete','刪除 (Delete)',bi('trash'),'del')+'</div><div class="swatches">'
     +[['default','var(--rel)','預設顏色'],...COLORS.map(c=>[c,c,'線條顏色 '+c])].map(([v,c,n])=>`<button data-rb="swatch:${v}" style="--c:${c}" title="${n}" aria-label="${n}"></button>`).join('')+'</div>';
   canvas.append(bar);
   const flyout=document.createElement('div'); flyout.className='line-pop';
@@ -198,6 +198,7 @@ export function setupRelations({ canvas, world, button, getMap, getView, getBox,
       b.classList.toggle('on', k==='style'?val===styleOf(r) : k==='type'?val===typeOf(r) : k==='arrow'?(arrow==='both'||arrow===val) : k==='swatch'?val===(r.color||'default') : false);
     });
     bar.querySelector('.rel-color-dot').style.setProperty('--c', r.color||'var(--rel)');
+    bar.querySelector('[data-rb="pin"]').style.display=canPin?.(r)?'':'none';
     const bw=bar.offsetWidth, bh=bar.offsetHeight, x=v.x+g.mid.x*v.k, y=v.y+g.mid.y*v.k;
     let top=y-bh-28; if(top<8) top=y+28;
     bar.style.left=Math.min(Math.max(8,x-bw/2),Math.max(8,canvas.clientWidth-bw-8))+'px'; bar.style.top=top+'px';
@@ -325,6 +326,7 @@ export function setupRelations({ canvas, world, button, getMap, getView, getBox,
     if(k==='color') { bar.classList.toggle('colors'); place(); return; }
     if(k==='label') return editLabel();
     if(k==='delete') return remove();
+    if(k==='pin') { if(pin?.(r)) { selected=null; render(); } return; }
     snapshot();
     if(k==='swatch') { if(val==='default') delete r.color; else r.color=val; defaults.color=r.color||null; }
     else if(k==='style') defaults.style=r.style=val;

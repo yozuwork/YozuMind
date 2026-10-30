@@ -51,6 +51,8 @@ function Toolbar() { return (<header className="topbar">
       </div>
       <button className="icon-btn" id="imageBtn" title="加入圖片，也可以直接貼上" aria-label="加入圖片"><i className="bi bi-image" aria-hidden="true"></i></button>
       <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp,image/avif" multiple hidden />
+      <button className="icon-btn" id="attachBtn" title="加入 PDF、Word、Excel 檔案，也可以直接貼上或拖進畫布" aria-label="加入檔案"><i className="bi bi-paperclip" aria-hidden="true"></i></button>
+      <input id="attachFile" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.csv" multiple hidden />
       <button className="icon-btn" id="themeBtn" title="切換色系" aria-label="切換色系"><i className="bi bi-moon-stars" aria-hidden="true"></i></button>
       <button className="btn btn-ghost" id="shareBtn" title="分享">
         <span style={{display: "flex", alignItems: "center", gap: 6}}>
@@ -59,6 +61,16 @@ function Toolbar() { return (<header className="topbar">
         </span>
       </button>
     </header>); }
+// Shown over the tool rail while a note (card or note-style node) is selected.
+function NoteRail() { return (<nav className="toolrail ctx-rail" id="ctxRail" aria-label="筆記工具" hidden>
+      <button className="ctx-back" data-ctx="back" title="返回工具列 (Esc)" aria-label="返回工具列"><i className="bi bi-arrow-left" aria-hidden="true"></i></button>
+      {[['title','標題','type-h1'],['color','顏色','palette'],['smaller','縮小文字','fonts'],['bigger','放大文字','fonts'],['todo','待辦','check2-square'],['code','程式碼','code-slash'],['delete','刪除','trash']].map(([k,label,ic]) => (
+        <button className="rail-tool" data-ctx={k} key={k} title={label}>
+          <span className="rail-icon"><i className={`bi bi-${ic}${k==='smaller'?' fs-small':''}`} aria-hidden="true"></i></span>
+          <span className="rail-label">{label}</span>
+        </button>
+      ))}
+    </nav>); }
 function ToolRail() { return (<nav className="toolrail" id="toolrail" aria-label="卡片工具">
       {RAIL_TOOLS.map(([type, label, icon]) => (
         <button className="rail-tool" data-tool={type} key={type} title={`${label}：點一下新增，或拖曳到畫布、欄位`}>
@@ -71,6 +83,10 @@ function ToolRail() { return (<nav className="toolrail" id="toolrail" aria-label
         <span className="rail-label">塗鴉</span>
       </button>
       <span className="rail-sep" aria-hidden="true"></span>
+      <button className="rail-tool" id="selectBtn" title="框選：拖曳範圍一次選取多個物件（任何時候也可按住 Shift 拖曳）">
+        <span className="rail-icon"><i className="bi bi-bounding-box-circles" aria-hidden="true"></i></span>
+        <span className="rail-label">框選</span>
+      </button>
       <button className="rail-tool" id="relationBtn" title="關聯線：從物件拖到目標，或點選後選擇線型">
         <span className="rail-icon"></span>
         <span className="rail-label">關聯線</span>
@@ -87,12 +103,19 @@ function Canvas() { return (<div className="canvas" id="canvas" tabIndex="0" ari
           <span className="sep" data-for="color"></span>
           <button data-act="color" title="分支顏色"><span className="swatch-dot" id="curSwatch"></span></button>
           <button data-act="collapse" title="收合／展開 (空白鍵)"><i className="bi bi-chevron-down" aria-hidden="true"></i></button>
+          <button data-act="style" title="節點樣式：一般／筆記／欄位"><i className="bi bi-sticky" aria-hidden="true"></i><span className="lbl">樣式</span></button>
           <button data-act="page" title="建立獨立頁面"><i className="bi bi-folder-plus" aria-hidden="true"></i></button>
           <button data-act="view" title="在側邊檢視內容"><i className="bi bi-layout-sidebar-reverse" aria-hidden="true"></i><span className="lbl">檢視內容</span></button>
           <span className="sep" data-for="del"></span>
+          <button data-act="reset" title="還原自動排列的位置與大小"><i className="bi bi-arrow-counterclockwise" aria-hidden="true"></i></button>
           <button data-act="delete" className="del" title="刪除 (Delete)"><i className="bi bi-trash" aria-hidden="true"></i></button>
         </div>
         <div className="swatches" id="swatches"></div>
+        <div className="node-styles" id="nodeStyles">
+          <button data-nstyle="plain" title="一般節點"><i className="bi bi-type" aria-hidden="true"></i><span className="lbl">一般節點</span></button>
+          <button data-nstyle="note" title="筆記：第一行是標題，其餘是內文"><i className="bi bi-sticky" aria-hidden="true"></i><span className="lbl">筆記</span></button>
+          <button data-nstyle="column" title="欄位：第一行是標題，其餘每行一張小卡"><i className="bi bi-card-heading" aria-hidden="true"></i><span className="lbl">欄位</span></button>
+        </div>
       </div>
 
       <div className="hint" id="hint">
@@ -100,6 +123,17 @@ function Canvas() { return (<div className="canvas" id="canvas" tabIndex="0" ari
         <span><kbd>Enter</kbd>同層</span>
         <span><kbd>雙擊</kbd>編輯</span>
         <span><kbd>拖曳</kbd>移到其他節點下</span>
+        <span><kbd>Shift</kbd>+拖曳 框選</span>
+      </div>
+      <div className="marquee" id="marquee" hidden></div>
+      <div className="nodebar group-bar" id="groupBar">
+        <div className="tools">
+          <span className="group-count" id="groupCount"></span>
+          <span className="sep"></span>
+          <button data-gact="copy" title="複製 (Ctrl+C)"><i className="bi bi-copy" aria-hidden="true"></i></button>
+          <button data-gact="delete" className="del" title="刪除 (Delete)"><i className="bi bi-trash" aria-hidden="true"></i></button>
+          <button data-gact="clear" title="取消選取 (Esc)"><i className="bi bi-x-lg" aria-hidden="true"></i></button>
+        </div>
       </div>
       <div className="zoombar">
         <button id="zOut" title="縮小" aria-label="縮小"><i className="bi bi-dash-lg" aria-hidden="true"></i></button>
@@ -145,6 +179,7 @@ export default function App() {
 
     <div className="board">
       <ToolRail />
+      <NoteRail />
       <Canvas />
     </div>
   </main>

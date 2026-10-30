@@ -287,6 +287,18 @@ export function setupDraw({ canvas, world, button, rail, getMap, getView, uid, s
   sync();
   return {
     render, place, exit,
+    selection() { return active && selected.size ? strokes().filter(s=>selected.has(s.id)) : []; },
+    cut: deleteSelection,
+    // Pasted strokes keep their shape; their bounding box is centred on `at`.
+    paste(list, at) {
+      const map=getMap(); if(!map || !canEdit() || !list.length) return;
+      const boxes=list.map(strokeBox), x0=Math.min(...boxes.map(b=>b.x)), y0=Math.min(...boxes.map(b=>b.y));
+      const x1=Math.max(...boxes.map(b=>b.x+b.w)), y1=Math.max(...boxes.map(b=>b.y+b.h)), dx=at.x-(x0+x1)/2, dy=at.y-(y0+y1)/2;
+      snapshot(); map.strokes ||= [];
+      for(const s of list) { s.points=s.points.map(([x,y])=>[x+dx,y+dy]); s.z=nextZ(); map.strokes.push(s); }
+      selected.clear(); if(active) list.forEach(s=>selected.add(s.id));
+      save(map.id); render(true);
+    },
     boxes() { return strokes().map(strokeBox); },
     destroy() { listeners.forEach(fn=>fn()); layer.remove(); overlay.remove(); panel.remove(); shapeBar.remove(); selbar.remove(); canvas.classList.remove('drawing'); },
   };

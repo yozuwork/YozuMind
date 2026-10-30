@@ -420,7 +420,7 @@ kbd{font-family:var(--font);font-size:11px;padding:1px 6px;border-radius:4px;bor
 .card-column.collapsed{padding-bottom:0}
 
 /* Code blocks inside notes: a fixed dark editor look (Monokai-like) in both themes. */
-.note-code{--code-bg:#2d2b37;margin:6px 0;border-radius:6px;background:var(--code-bg);color:#e9e6f2;font:12.5px/1.6 "JetBrains Mono","Cascadia Code",Consolas,"Courier New","Microsoft JhengHei UI","PingFang TC",ui-monospace,monospace;overflow:hidden;box-shadow:inset 0 0 0 1px rgba(255,255,255,.06)}
+.note-code{--code-bg:#2d2b37;margin:6px 0;border-radius:6px;background:var(--code-bg);color:#e9e6f2;font:.9em/1.6 "JetBrains Mono","Cascadia Code",Consolas,"Courier New","Microsoft JhengHei UI","PingFang TC",ui-monospace,monospace;overflow:hidden;box-shadow:inset 0 0 0 1px rgba(255,255,255,.06)}
 .code-head{display:flex;align-items:center;justify-content:space-between;padding:3px 6px 3px 12px;background:#25232e;font:600 11px/1.6 system-ui,sans-serif;color:#8f8ba3;text-transform:lowercase}
 .code-copy{width:24px;height:22px;display:grid;place-items:center;border-radius:4px;color:#8f8ba3;font-size:12px}
 .code-copy:hover{background:rgba(255,255,255,.08);color:#e9e6f2}
@@ -454,3 +454,128 @@ kbd{font-family:var(--font);font-size:11px;padding:1px 6px;border-radius:4px;bor
 @media (max-width:760px){.view-panel{position:absolute;inset:0;width:auto;min-width:0;z-index:60}}
 /* Inside the viewer the app shows only the canvas and its toolbar. */
 :root[data-embed] .side,:root[data-embed] .scrim,:root[data-embed] #openSide,:root[data-embed] #shareBtn,:root[data-embed] #themeBtn,:root[data-embed] .nodebar [data-act="view"],:root[data-embed] [data-card-act="view"]{display:none !important}
+
+/* Editing a code block: a transparent textarea over the highlighted backdrop, so typing already looks like code. */
+.note-editor{display:flex;flex-direction:column}
+.note-editor .note-code{margin:6px 16px}
+.note-editor .note-input.extra{min-height:30px;padding-top:6px;padding-bottom:6px}
+.note-editor .note-input+.note-input{padding-top:0}
+.code-lang-input{width:9em;padding:0;border:0;background:none;color:#8f8ba3;font:600 11px/1.6 system-ui,sans-serif;outline:none}
+.code-lang-input::placeholder{color:#5f5c70}
+.code-edit{position:relative}
+.code-back{pointer-events:none}
+.code-input{position:absolute;inset:0;width:100%;height:100%;margin:0;border:0;outline:none;resize:none;overflow:hidden;background:transparent;color:transparent;caret-color:#fcfcfa;
+  padding:6px 12px 6px calc(2.6em + 12px);font:inherit;white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;tab-size:2}
+.code-input::selection{background:rgba(120,140,255,.35);color:transparent}
+.code-editing{box-shadow:inset 0 0 0 1px rgba(255,255,255,.06),0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent)}
+.note-editor .note-input:not(:only-child){min-height:0}
+
+/* File cards: PDF / Word / Excel attachments. */
+.card-file{width:240px}
+.file-row{display:flex;align-items:center;gap:10px;padding:10px 12px}
+.file-icon{width:40px;height:40px;flex:none;display:grid;place-items:center;border-radius:8px;background:color-mix(in srgb, var(--fk) 14%, transparent);color:var(--fk);font-size:22px}
+.file-meta{min-width:0;flex:1}
+.file-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.file-info{font-size:12px;color:var(--ink-2)}
+.column-body .card-file{width:auto}
+
+/* Maps with pages: a chevron and folder icon, pages indented beneath. */
+.page.has-pages{padding-left:2px}
+.page .pchev{font-size:11px;width:14px;flex:none;margin-right:-4px;color:var(--side-ink-2);transition:transform .15s;display:grid;place-items:center;height:22px;border-radius:4px}
+.page .pchev:hover{background:var(--side-hover);color:var(--side-ink)}
+.page.open .pchev{transform:rotate(90deg)}
+.page.subpage:not(.has-pages){padding-left:24px}
+.page .fcount{font-size:12px;color:var(--side-ink-2);font-weight:400}
+.page:hover .fcount,.page.active .fcount{display:none}
+
+/* Note-style nodes: a sticky-note card inside the tree, topped with the branch colour. */
+.node.as-note{min-width:150px;max-width:320px;padding:12px 16px 14px;border-radius:3px;border-top:3px solid var(--c);background:var(--note-bg);color:var(--note-ink);
+  font-size:14px;font-weight:400;line-height:1.6;text-align:left;box-shadow:0 1px 2px rgba(0,0,0,.16),0 3px 8px rgba(0,0,0,.06)}
+.node.as-note.sel,.node.as-note.editing{background:var(--note-bg);box-shadow:0 0 0 2px var(--c),0 3px 8px rgba(0,0,0,.08)}
+
+/* Text on branch lines: double-click a line to write on it. */
+#edges .edge-hit{stroke:transparent;stroke-width:16;pointer-events:stroke;cursor:text}
+#edges .edge-hit:hover{stroke:color-mix(in srgb, var(--accent) 12%, transparent)}
+.edge-labels{position:absolute;left:0;top:0;width:0;height:0}
+.edge-label{position:absolute;transform:translate(-50%,-50%);width:max-content;max-width:240px;padding:2px 8px;border-radius:4px;background:var(--canvas);color:var(--ink-2);
+  font-size:13px;line-height:1.4;white-space:pre-wrap;text-align:center;cursor:text;user-select:none;-webkit-user-select:none}
+.edge-label.editing{min-width:40px;outline:2px solid var(--accent);background:var(--panel);color:var(--ink);user-select:text;-webkit-user-select:text}
+
+/* Page card layouts: row (icon left, name right) and icon only. */
+.card-board.view-row{width:max-content;min-width:150px;max-width:420px;height:auto;flex-direction:row;align-items:center;gap:10px;padding:8px 14px 8px 10px;text-align:left;border-radius:8px}
+.card-board.view-row .board-tile{flex:none;width:34px;height:34px}
+.board-text{min-width:0;flex:1;display:flex;flex-direction:column}
+.card-board.view-row .board-title{margin-top:0;line-height:1.3}
+.card-board.view-row .board-meta{font-size:11.5px;line-height:1.3}
+.card-board.view-row .card-input.board-title{text-align:left}
+.card-board.view-icon{width:auto;height:auto;padding:8px;border-radius:12px}
+.card-board.view-icon .board-tile{width:56px;height:56px;flex:none}
+.card-board.view-icon .card-input.board-title{width:140px}
+.column-body .card-board.view-row{width:auto;max-width:none}
+.column-body .card-board.view-icon,.note-embeds .card-board.view-icon{width:max-content;align-self:flex-start}
+.card-actions.views{gap:2px;width:max-content}
+.card-actions .view-opt{width:auto;display:flex}
+.view-opt{display:flex;align-items:center;gap:5px;padding:0 9px;height:28px;border-radius:6px;font-size:12.5px;color:var(--ink-2);white-space:nowrap}
+.view-opt.on{background:color-mix(in srgb, var(--accent) 14%, transparent);color:var(--accent)}
+.view-opt:hover{color:var(--ink)}
+
+/* Marquee selection */
+.canvas.selecting{cursor:crosshair}
+.marquee{position:absolute;z-index:40;border:1.5px solid var(--accent);background:color-mix(in srgb, var(--accent) 10%, transparent);border-radius:3px;pointer-events:none}
+.marquee[hidden]{display:none}
+.group-layer{position:absolute;left:0;top:0;width:0;height:0;z-index:100000}
+.group-item{position:absolute;border:1.5px dashed var(--accent);border-radius:6px;pointer-events:none}
+.group-box{position:absolute;border:1.5px solid color-mix(in srgb, var(--accent) 55%, transparent);border-radius:8px;background:color-mix(in srgb, var(--accent) 5%, transparent);cursor:move;pointer-events:auto}
+.group-count{padding:0 8px;font-size:13px;color:var(--ink-2);white-space:nowrap}
+
+/* Cards and images pinned to a node */
+.pin-edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
+.pin-edges path{fill:none;stroke-width:2.2;stroke-linecap:round;stroke-dasharray:1 6;opacity:.9}
+.node.attach-target{box-shadow:0 0 0 3px var(--accent),0 0 0 8px color-mix(in srgb, var(--accent) 22%, transparent)}
+.pin-badge{position:absolute;left:-9px;top:-9px;z-index:3;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:#fff;font-size:11px;box-shadow:0 1px 3px rgba(0,0,0,.25);pointer-events:none}
+.canvas.pin-picking,.canvas.pin-picking .node{cursor:copy}
+
+/* Title + body: note cards and note-style nodes */
+.note-title{padding:12px 30px 0 16px;font-size:1.1em;font-weight:700;line-height:1.4;word-break:break-word}
+.note-title+.note-text{padding-top:6px}
+.note-title+.note-text.note-empty{min-height:0;padding:0 0 10px}
+.note-title-input{display:block;width:100%;padding:12px 30px 2px 16px;border:0;background:transparent;color:inherit;font:inherit;font-size:1.1em;font-weight:700;outline:none}
+.note-title-input::placeholder{color:color-mix(in srgb, currentColor 40%, transparent);font-weight:600}
+.note-title-input+.note-editor .note-input:first-child{padding-top:6px}
+.node.as-note .nt{font-size:15px;font-weight:700;line-height:1.45}
+.node.as-note .nb{margin-top:6px;padding-top:6px;border-top:1px solid color-mix(in srgb, var(--note-ink) 14%, transparent);white-space:pre-wrap;opacity:.85}
+
+/* Free node position and size */
+.node.dragging{opacity:.85;box-shadow:0 8px 24px rgba(0,0,0,.18);z-index:5}
+.node-grip{position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;border:2px solid var(--accent);border-radius:3px;background:var(--panel);cursor:nwse-resize;z-index:6}
+
+/* Node style picker */
+.node-styles{display:none;gap:2px}
+.nodebar.styling .node-styles{display:flex}
+.nodebar.styling .tools{display:none}
+.node-styles button.on{background:color-mix(in srgb, var(--accent) 14%, transparent);color:var(--accent)}
+/* Column-style nodes: a column card inside the tree */
+.node.as-column{min-width:200px;max-width:300px;padding:0 0 8px;border-radius:4px;border-top:3px solid var(--c);background:var(--column-bg);color:var(--card-ink);
+  font-size:14px;font-weight:400;line-height:1.5;text-align:left;box-shadow:var(--card-shadow)}
+.node.as-column.sel,.node.as-column.editing{background:var(--column-bg);box-shadow:0 0 0 2px var(--c),var(--card-shadow)}
+.node.as-column.editing{padding:10px 12px}
+.node.as-column .ch{display:flex;align-items:center;gap:8px;padding:9px 12px}
+.node.as-column .ct{flex:1;min-width:0;font-weight:700;word-break:break-word}
+.node.as-column .cc{font-size:12px;color:var(--ink-2)}
+.node.as-column .cr{margin:0 8px 6px;padding:7px 10px;border-radius:3px;background:var(--card-bg);box-shadow:var(--card-shadow);white-space:pre-wrap;word-break:break-word}
+
+.node.col-host{opacity:0;pointer-events:none;padding:0;border:0;box-shadow:none}
+.card-actions button[data-card-act^="fs"]{font-weight:700;font-size:12px;width:auto;padding:0 5px}
+
+/* Contextual note rail */
+.board{position:relative}
+.ctx-rail{position:absolute;left:0;top:0;bottom:0;z-index:7}
+.ctx-rail[hidden]{display:none}
+.ctx-rail .rail-tool{cursor:pointer}
+.ctx-rail .rail-tool[hidden]{display:none}
+.ctx-rail .rail-tool.on .rail-icon{box-shadow:0 0 0 2px var(--accent)}
+.ctx-back{width:36px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--rail-ink);font-size:17px}
+.ctx-back:hover{background:var(--side-hover)}
+.ctx-rail .fs-small{font-size:13px}
+.node.as-note .nb.plain{margin:0;padding:0;border:0;opacity:1}
+.node.as-note .nt.ph{opacity:.4}

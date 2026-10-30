@@ -1,7 +1,14 @@
-export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+export const MAX_FILE_BYTES = 300 * 1024 * 1024;
 
-export function serializeMaps(maps, folders = []) {
-  return JSON.stringify({ format: 'yozumind', version: 1, exportedAt: new Date().toISOString(), maps, ...(folders.length ? { folders } : {}) }, null, 2);
+export function serializeMaps(maps, folders = [], files = {}) {
+  return JSON.stringify({ format: 'yozumind', version: 1, exportedAt: new Date().toISOString(), maps, ...(folders.length ? { folders } : {}), ...(Object.keys(files).length ? { files } : {}) }, null, 2);
+}
+
+// Attached file bodies keyed by fileId, as data URLs.
+export function parseAttachments(text) {
+  const files = JSON.parse(text.replace(/^\uFEFF/, ''))?.files;
+  if (!files || typeof files !== 'object' || Array.isArray(files)) return [];
+  return Object.entries(files).filter(([id, url]) => /^f-[\w]{1,40}$/.test(id) && typeof url === 'string' && url.startsWith('data:')).slice(0, 2000);
 }
 
 // Folders keep their ids so imported maps can stay inside them.
@@ -78,8 +85,20 @@ export function parseMaps(text, newId) {
     if(typeof value.id === 'string') ids.set(value.id,result.id);
     if (typeof value.color === 'string' && /^#[\da-f]{6}$/i.test(value.color)) result.color = value.color;
     if (typeof value.collapsed === 'boolean') result.collapsed = value.collapsed;
+    if (value.note === true) result.note = true;
+    if (typeof value.titled === 'boolean') result.titled = value.titled;
+    else if (value.column === true) { result.column = true; if (typeof value.colCard === 'string') result.colCard = value.colCard; }
+    if (value.off && Number.isFinite(value.off.x) && Number.isFinite(value.off.y)) result.off = { x: value.off.x, y: value.off.y };
+    if (Number.isFinite(value.w)) result.w = Math.min(900, Math.max(60, value.w));
+    if (Number.isFinite(value.h)) result.h = Math.min(900, Math.max(24, value.h));
+    if (typeof value.edgeLabel === 'string' && value.edgeLabel.trim() && value.edgeLabel.length <= 500) result.edgeLabel = value.edgeLabel;
     if (typeof value.page === 'string' && value.page.length <= 100) result.page = mapIds.get(value.page) || value.page;
     return result;
+  }
+  // Cards and images pinned to a node keep the pin when that node is part of the same import.
+  function anchorOf(value) {
+    const a = value.anchor, node = a && typeof a.node === 'string' && ids.get(a.node);
+    return node && Number.isFinite(a.dx) && Number.isFinite(a.dy) ? { anchor: { node, dx: a.dx, dy: a.dy } } : {};
   }
   function cardText(value, max) {
     if (value === undefined) return '';
@@ -87,7 +106,7 @@ export function parseMaps(text, newId) {
     return value;
   }
   function card(value, nested) {
-    if (!value || typeof value !== 'object' || !['note','link','todo','column','folder','image','board'].includes(value.type) ||
+    if (!value || typeof value !== 'object' || !['note','link','todo','column','folder','image','board','file'].includes(value.type) ||
         (nested && ['column','folder'].includes(value.type)) || ++cardCount > 2000) {
       throw new Error('卡片格式不正確，或超過 2,000 張卡片。');
     }
@@ -95,10 +114,12 @@ export function parseMaps(text, newId) {
     if (typeof value.id === 'string') ids.set(value.id, result.id);
     if (!nested) {
       if (![value.x, value.y].every(Number.isFinite)) throw new Error('卡片位置格式不正確。');
-      Object.assign(result, { x: value.x, y: value.y }, zOf(value));
+      Object.assign(result, { x: value.x, y: value.y }, zOf(value), anchorOf(value));
     }
     if (value.type === 'note') {
       result.text = cardText(value.text, 10000);
+      if (value.title) result.title = cardText(value.title, 1000);
+      if (Number.isFinite(value.fs) && value.fs >= 11 && value.fs <= 22) result.fs = value.fs;
       if (NOTE_COLORS.includes(value.color)) result.color = value.color;
       if (value.cards !== undefined) {
         if (!Array.isArray(value.cards) || value.cards.length > 100) throw new Error('筆記內嵌內容格式不正確。');
@@ -111,7 +132,12 @@ export function parseMaps(text, newId) {
       if (Number.isFinite(value.w)) result.w = Math.min(1200, Math.max(100, value.w));
       if (Number.isFinite(value.h)) result.h = Math.min(1200, Math.max(90, value.h));
       if (value.frame === false) result.frame = false;
+      if (['row','icon'].includes(value.view)) result.view = value.view;
       if (FOLDER_COLORS.includes(value.color)) result.color = value.color;
+    }
+    else if (value.type === 'file') {
+      if (typeof value.fileId !== 'string' || !/^f-[\w]{1,40}$/.test(value.fileId) || !['pdf','word','excel'].includes(value.kind)) throw new Error('檔案卡片格式不正確。');
+      Object.assign(result, { fileId: value.fileId, kind: value.kind, name: cardText(value.name, 500), size: Number.isFinite(value.size) && value.size >= 0 ? value.size : 0 });
     }
     else if (value.type === 'image') {
       if (typeof value.src !== 'string' || !IMAGE_SRC.test(value.src)) throw new Error('圖片卡片格式不正確。');
@@ -151,10 +177,12 @@ export function parseMaps(text, newId) {
          !IMAGE_SRC.test(image.src) ||
          ![image.x,image.y,image.w,image.h].every(Number.isFinite) || image.w<=0 || image.h<=0 || image.w>10000 || image.h>10000) throw new Error('圖片資料或尺寸格式不正確。');
       const id=newId('img');ids.set(image.id,id);
-      return {id,src:image.src,x:image.x,y:image.y,w:image.w,h:image.h,...zOf(image)};
+      return {id,src:image.src,x:image.x,y:image.y,w:image.w,h:image.h,...zOf(image),...anchorOf(image)};
     });
     if(map.cards !== undefined && !Array.isArray(map.cards)) throw new Error('卡片格式不正確。');
     const cards = (map.cards || []).map(value => card(value, false));
+    // Column-style nodes point at their column card, whose id was just renewed.
+    for (const t of [root, ...trees.map(x => x.root)]) (function walk(n) { if (!n) return; if (n.colCard) { const c = ids.get(n.colCard); if (c) n.colCard = c; else delete n.colCard; } n.children.forEach(walk); })(t);
     if(map.relations !== undefined && (!Array.isArray(map.relations) || map.relations.length > 10000)) throw new Error('關聯線格式不正確。');
     const relations = (map.relations || []).flatMap(relation => {
       if(!relation || typeof relation.from !== 'string' || typeof relation.to !== 'string') throw new Error('關聯線端點格式不正確。');

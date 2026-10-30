@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseFolders, parseMaps, serializeMaps } from './files.js';
+import { parseAttachments, parseFolders, parseMaps, serializeMaps } from './files.js';
 
 let id = 0;
 const newId = prefix => `${prefix}-${++id}`;
@@ -163,4 +163,26 @@ test('page cards, note embeds and collapsed state follow their pages through an 
   assert.equal(column.collapsed, true);
   assert.equal(column.cards[0].mapId, 'elsewhere');
   assert.throws(() => parseMaps(JSON.stringify([{ ...map, cards:[{ type:'note', x:0, y:0, text:'', cards:[{ type:'link', url:'' }] }] }]), newId));
+});
+
+test('file cards keep their attachment id and exports carry the file bodies', () => {
+  const source = { ...map, cards:[{ id:'f1', type:'file', x:5, y:6, fileId:'f-abc123', kind:'pdf', name:'規格.pdf', size:2048 },
+    { id:'c', type:'column', x:0, y:0, title:'欄', cards:[{ id:'f2', type:'file', fileId:'f-xyz', kind:'excel', name:'報表.xlsx', size:10 }] }] };
+  const text = serializeMaps([source], [], { 'f-abc123':'data:application/pdf;base64,JVBERg==', 'bad id':'data:x' });
+  const [restored] = parseMaps(text, newId);
+  assert.deepEqual([restored.cards[0].fileId, restored.cards[0].kind, restored.cards[0].name, restored.cards[0].size], ['f-abc123', 'pdf', '規格.pdf', 2048]);
+  assert.equal(restored.cards[1].cards[0].kind, 'excel');
+  assert.deepEqual(parseAttachments(text), [['f-abc123', 'data:application/pdf;base64,JVBERg==']]);
+  assert.throws(() => parseMaps(JSON.stringify([{ ...map, cards:[{ type:'file', x:0, y:0, fileId:'f-1', kind:'exe' }] }]), newId));
+});
+
+test('cards and images pinned to a node keep the pin on the renewed node id', () => {
+  const src = { ...map,
+    cards:[{ id:'c1', type:'note', x:1, y:2, text:'說明', anchor:{ node:'old-child', dx:0, dy:60 } }, { id:'c2', type:'note', x:0, y:0, anchor:{ node:'missing', dx:0, dy:0 } }],
+    images:[{ id:'i1', src:'data:image/png;base64,AA==', x:0, y:0, w:10, h:10, anchor:{ node:'old-root', dx:5, dy:6 } }] };
+  const [m] = parseMaps(serializeMaps([src]), newId);
+  const child = m.root.children[0];
+  assert.deepEqual(m.cards[0].anchor, { node: child.id, dx: 0, dy: 60 });
+  assert.equal(m.cards[1].anchor, undefined);
+  assert.deepEqual(m.images[0].anchor, { node: m.root.id, dx: 5, dy: 6 });
 });

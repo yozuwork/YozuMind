@@ -1,4 +1,5 @@
-import { MAX_FILE_BYTES, parseFolders, parseMaps, serializeMaps } from './files.js';
+import { MAX_FILE_BYTES, parseAttachments, parseFolders, parseMaps, serializeMaps } from './files.js';
+import { blobToDataUrl, dataUrlToBlob, fileKind, getFile, putFile } from './attachments.js';
 import { setupCanvasAssets } from './canvas-assets.js';
 import { setupCards, stickyIcon, NOTE_COLORS, folderIcon, FOLDER_COLORS } from './cards.js';
 import { setupRelations } from './relations.js';
@@ -19,6 +20,11 @@ const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 const isMobile = () => window.matchMedia('(max-width:760px)').matches;
 
 const app=$('app'), canvas=$('canvas'), world=$('world'), edges=$('edges'), measurer=$('measure');
+// Text written on a branch line (Whimsical style) sits in its own layer between the lines and the nodes.
+const edgeLabels=document.createElement('div'); edgeLabels.className='edge-labels'; edges.after(edgeLabels);
+// Lines from a node to the cards and images pinned to it.
+const pinEdges=document.createElementNS('http://www.w3.org/2000/svg','svg'); pinEdges.setAttribute('class','pin-edges'); pinEdges.setAttribute('width','1'); pinEdges.setAttribute('height','1'); edges.before(pinEdges);
+let edgeEditing=null;
 const nodebar=$('nodebar');
 
 const store = { mode:'loading', db:null, readOnly:false };
@@ -145,6 +151,36 @@ function createTree(at){
   m.trees ||= []; m.trees.push({id:uid('t'), x:Math.round(at.x), y:Math.round(at.y), root});
   selectedId=root.id; renderMap(); ensureVisible(root.id); startEdit(root.id,null,true); save(currentId);
 }
+// A node resized by hand: fixed width (text wraps inside), height as a minimum.
+function sizeNode(el, n){
+  const w=n.w?n.w+'px':'', h=n.h?n.h+'px':'';
+  if(el.style.width!==w){ el.style.width=w; el.style.maxWidth=n.w?'none':''; }
+  if(el.style.minHeight!==h) el.style.minHeight=h;
+}
+const noteTitled=n=>n.titled ?? (n.text||'').includes('\n');
+// Note and column styles hold several lines: first line is the title.
+const multiLine=n=>!!(n&&(n.note||n.column));
+const styleOf=n=>n.column?'column':n.note?'note':'plain';
+// Note-style nodes read their first line as a title and the rest as body text; column-style nodes show each further line as a small card.
+function paintNode(el, n){
+  const key=styleOf(n)+'|'+(n.column?n.children?.length||0:'')+'|'+n.titled+'|'+(n.text||'');
+  if(el._painted===key) return;
+  el._painted=key;
+  if(n.column){
+    const lines=(n.text||'').split('\n'), head=document.createElement('div'), t=document.createElement('span'), c=document.createElement('span');
+    head.className='ch'; t.className='ct'; t.textContent=lines[0]||'未命名欄位'; c.className='cc'; c.textContent=String(n.children?.length||0); head.append(t,c);
+    const rows=lines.slice(1).filter(l=>l.trim()).map(l=>{ const r=document.createElement('div'); r.className='cr'; r.textContent=l; return r; });
+    el.replaceChildren(head,...rows); return;
+  }
+  if(!n.note||!n.text){ el.textContent=n.text||''; return; }
+  const lines=n.text.split('\n'), b=document.createElement('div');
+  // With a title (the 標題 tool, or older notes with several lines) the first line is the title; otherwise everything is body.
+  if(!noteTitled(n)){ b.className='nb plain'; b.textContent=n.text; el.replaceChildren(b); return; }
+  const t=document.createElement('div'); t.className='nt'+(lines[0].trim()?'':' ph'); t.textContent=lines[0].trim()||'標題';
+  const body=lines.slice(1).join('\n').replace(/^\n+/,'');
+  if(!body){ el.replaceChildren(t); return; }
+  b.className='nb'; b.textContent=body; el.replaceChildren(t,b);
+}
 function sanitize(n){ if(!n||typeof n!=='object') return mkNode(''); n.text=typeof n.text==='string'?n.text:''; n.children=Array.isArray(n.children)?n.children.map(sanitize):[]; if(!n.id) n.id=uid('n'); return n; }
 function countDesc(n){ let c=0; (n.children||[]).forEach(ch=>{ c+=1+countDesc(ch); }); return c; }
 function nextColor(root){
@@ -174,9 +210,10 @@ function step(from,to){
 const isDown = () => (cur()&&cur().layout)!=='right';
 function lvl(d){ return d===0?'root':d===1?'l1':'l2'; }
 function measure(n,d){
-  const k=lvl(d)+'|'+(n.text||'輸入文字');
+  const hs=n.column&&hostSize(n); if(hs) return hs;
+  const k=lvl(d)+'|'+styleOf(n)+(n.column?n.children.length:'')+(n.titled??'')+'|'+(n.w||'')+'x'+(n.h||'')+'|'+(n.text||'輸入文字');
   let v=mcache.get(k); if(v) return v;
-  measurer.className='node '+lvl(d); measurer.textContent=n.text||'輸入文字';
+  measurer.className='node '+lvl(d)+(n.note?' as-note':'')+(n.column?' as-column':''); sizeNode(measurer, n); paintNode(measurer, multiLine(n)?n:{text:n.text||'輸入文字'});
   const r=measurer.getBoundingClientRect(); v={w:Math.ceil(r.width), h:Math.ceil(r.height)};
   mcache.set(k,v); return v;
 }
@@ -205,6 +242,12 @@ function doLayout(){
     (n.collapsed?[]:n.children).forEach(c=>{ const co=L.get(c.id); placeRight(c, x+o.w+gapLvl(d), s+co.sh/2, d+1); s+=co.sh+gapSib(d+1); });
   }
   for(const tree of treesOf(m)){ size(tree.root,0); (down?placeDown:placeRight)(tree.root,tree.x,tree.y,0); }
+  // Nodes dragged to a free spot keep an offset from their automatic place; descendants move along.
+  for(const tree of treesOf(m)) (function shift(n,ax,ay){
+    const o=L.get(n.id); if(!o) return;
+    const x=ax+(n.off?.x||0), y=ay+(n.off?.y||0); o.x+=x; o.y+=y;
+    if(!n.collapsed) n.children.forEach(c=>shift(c,x,y));
+  })(tree.root,0,0);
 }
 
 /* ---------------- render ---------------- */
@@ -212,7 +255,7 @@ function renderMap(){
   const m=cur();
   updateEmpty();
   if(!m){ for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; hideBar(); cards?.render(); assets?.render(); relations?.render(); draw?.render(); return; }
-  buildIndex(); doLayout();
+  buildIndex(); ensureHosts(m); doLayout(); syncPins();
   const alive=new Set();
   for(const [id,info] of idx){
     const o=L.get(id); if(!o) continue; alive.add(id);
@@ -224,22 +267,106 @@ function renderMap(){
     if(drag && drag.id===id) cls+=' dragging';
     if(drag && drag.target===id) cls+=' drop';
     if(info.node.page && maps.has(info.node.page)) cls+=' has-page';
+    if(info.node.note) cls+=' as-note';
+    if(info.node.column) cls+=' as-column';
     if(el.className!==cls) el.className=cls;
-    if(id!==editingId && el.textContent!==info.node.text) el.textContent=info.node.text;
+    const host=hostCard(info.node);
+    if(host){ el.classList.add('col-host'); if(el.textContent) el.textContent=''; el._painted=null; }
+    else if(id!==editingId) paintNode(el, info.node);
     el.style.transform=`translate(${o.x}px,${o.y}px)`;
     el.style.setProperty('--c', info.color||'var(--accent)');
+    sizeNode(el, info.node);
+    if(host){ el.style.width=o.w+'px'; el.style.maxWidth='none'; el.style.minHeight=o.h+'px'; }
   }
   for(const [id,el] of els){ if(!alive.has(id)){ el.remove(); els.delete(id); } }
-  cards?.render(); draw?.render(); drawEdges(); applyView(); placeBar();
+  cards?.render();
+  // Column-style nodes are drawn by a real column card; once it has rendered at a new size, lay the tree out again.
+  if(!relayingOut && hostsResized()){ relayingOut=true; try{ renderMap(); } finally{ relayingOut=false; } return; }
+  draw?.render(); drawEdges(); applyView(); placeBar(); renderGroup(); placeGrip(); syncCtxRail();
+}
+/* ---------------- note tool rail ---------------- */
+// While a note card or a note-style node is selected, the left rail turns into that note's tools (Milanote style).
+function ctxTarget(){
+  if(groupSize()) return null;
+  const c=cards?.focused(); if(c&&c.type==='note') return {kind:'card', card:c};
+  const info=selectedId&&idx.get(selectedId); if(info&&info.node.note&&info.parent) return {kind:'node', id:selectedId, node:info.node};
+  return null;
+}
+function syncCtxRail(){
+  const t=store.readOnly?null:ctxTarget(), rail=$('ctxRail');
+  rail.hidden=!t; if(!t) return;
+  const show=(k,on)=>{ const b=rail.querySelector(`[data-ctx="${k}"]`); if(b) b.hidden=!on; };
+  ['smaller','bigger','todo','code'].forEach(k=>show(k,t.kind==='card'));
+  const titled=t.kind==='card' ? !!t.card.title : noteTitled(t.node);
+  const tb=rail.querySelector('[data-ctx="title"]'); tb.classList.toggle('on',titled); tb.title=titled?'移除標題':'加入標題';
+  rail.querySelector('[data-ctx="title"] .rail-label').textContent=titled?'移除標題':'標題';
+}
+function toggleNodeTitle(id){
+  const info=idx.get(id); if(!info||!guard()) return; const n=info.node;
+  if(editingId) commitEdit();
+  snapshot();
+  if(noteTitled(n)){ n.titled=false; const lines=n.text.split('\n'); if(!lines[0].trim()) n.text=lines.slice(1).join('\n'); renderMap(); save(currentId); toast('已移除標題'); return; }
+  // Turning the title on keeps the current text as body and opens an empty title line to type into.
+  n.titled=true; n.text='\n'+(n.text||''); renderMap(); save(currentId);
+  startEdit(id,null,true);
+  const el=els.get(id), r=document.createRange(); r.setStart(el.firstChild||el,0); r.collapse(true); const s=window.getSelection(); s.removeAllRanges(); s.addRange(r);
+}
+listen($('ctxRail'),'pointerdown',e=>e.preventDefault());
+listen($('ctxRail'),'click',e=>{
+  const b=e.target.closest('[data-ctx]'), t=ctxTarget(); if(!b) return;
+  const k=b.dataset.ctx;
+  if(k==='back'||!t){ clearNodeSelection(); cards?.deselect(); syncCtxRail(); return; }
+  if(t.kind==='card'){
+    if(k==='title') cards.toggleTitle(t.card.id);
+    else cards.act(t.card.id, {color:'color',smaller:'fsDown',bigger:'fsUp',todo:'todo',code:'code',delete:'delete'}[k]);
+  } else {
+    if(k==='title') toggleNodeTitle(t.id);
+    else if(k==='color'){ selectedId=t.id; renderMap(); nodebar.classList.add('colors'); placeBar(); }
+    else if(k==='delete') deleteSel();
+  }
+  setTimeout(syncCtxRail);
+});
+// Selection lives in several modules, so re-check after every interaction.
+for(const type of ['pointerup','keyup']) listen(document,type,()=>setTimeout(syncCtxRail));
+/* ---------------- column-style nodes ---------------- */
+// node.column + node.colCard: the node's body is a column card pinned exactly on the node, so it holds cards and images like any column.
+let relayingOut=false;
+function hostCard(n){ return n?.column&&n.colCard ? (cur()?.cards||[]).find(c=>c.id===n.colCard)||null : null; }
+function hostOf(cardId){ for(const [id,info] of idx) if(info.node.colCard===cardId&&info.node.column) return id; return null; }
+function ensureHosts(m){
+  for(const [id,info] of idx){
+    const n=info.node; if(!n.column) continue;
+    if(n.colCard){ const c=hostCard(n); if(c){ n.text=c.title||''; c.anchor={node:id, dx:0, dy:0}; continue; } delete n.column; delete n.colCard; continue; }
+    // First time: the title and each further line become a column with note cards.
+    const lines=(n.text||'').split('\n'), card={id:uid('c'), type:'column', title:(lines[0]||'').trim(), cards:lines.slice(1).filter(l=>l.trim()).map(t=>({id:uid('c'), type:'note', text:t.trim()})), x:0, y:0, z:nextZ(), anchor:{node:id, dx:0, dy:0}};
+    (m.cards ||= []).push(card); n.colCard=card.id; n.text=card.title;
+  }
+}
+function hostSize(n){ const c=hostCard(n), b=c&&cards?.box(c.id); return b ? {w:Math.ceil(b.w), h:Math.ceil(b.h)} : c ? {w:c.w||280, h:c.collapsed?48:110+(c.cards||[]).length*60} : null; }
+function hostsResized(){
+  for(const [id,info] of idx){ const o=L.get(id), s=info.node.column&&o&&hostSize(info.node); if(s&&(Math.abs(s.w-o.w)>1||Math.abs(s.h-o.h)>1)) return true; }
+  return false;
+}
+function nodeAction(cardId, act){
+  const id=hostOf(cardId); if(!id) return;
+  cards?.deselect(); selectedId=id;
+  if(act==='child') addChild(); else if(act==='unwrap') setNodeStyle(id,'plain');
+}
+const nodeGrip=document.createElement('div'); nodeGrip.className='node-grip'; nodeGrip.title='拖曳調整大小'; world.append(nodeGrip);
+function placeGrip(){
+  const o=selectedId&&L.get(selectedId), show=!!o&&!editingId&&!store.readOnly&&(!drag);
+  nodeGrip.style.display=show?'':'none';
+  if(show){ nodeGrip.style.left=(o.x+o.w)+'px'; nodeGrip.style.top=(o.y+o.h)+'px'; }
 }
 function drawEdges(){
-  const down=isDown(); let out='';
+  const down=isDown(); let out='', hits='';
+  const labels=[];
   for(const [id,info] of idx){
     const n=info.node, o=L.get(id); if(!o) continue;
     if(n.collapsed && n.children.length){
       const cx= down? o.x+o.w/2 : o.x+o.w+14, cy= down? o.y+o.h+14 : o.y+o.h/2;
       const col = info.depth===0 ? 'var(--ink-2)' : info.color;
-      out+=`<g class="chip" data-toggle="${id}"><circle cx="${cx}" cy="${cy}" r="11" fill="${col}"/><text x="${cx}" y="${cy}">${countDesc(n)}</text></g>`;
+      out+=`<g class="chip" data-toggle="${id}"><circle cx="${cx}" cy="${cy}" r="11" fill="${col}"/><text x="${cx}" y="${cy}">${countDesc(n)+pinsUnder(n)}</text></g>`;
       continue;
     }
     const kids=n.children, k=kids.length;
@@ -257,9 +384,16 @@ function drawEdges(){
         d=`M${sx} ${sy} C${sx+dx*.55} ${sy} ${ex-dx*.55} ${ey} ${ex} ${ey}`;
       }
       out+=`<path d="${d}" stroke="${ci.color}" stroke-width="${ci.depth===1?5:3.2}"/>`;
+      // A wide invisible twin catches double-clicks for adding text; the label sits at the curve's midpoint.
+      hits+=`<path class="edge-hit" data-edge="${c.id}" d="${d}"><title>雙擊線條加入文字</title></path>`;
+      const [p0,p1,p2,p3]=d.match(/-?[\d.]+(?:e-?\d+)?/g).map(Number).reduce((a,v,i)=>(i%2?a[a.length-1].push(v):a.push([v]),a),[]);
+      if(c.edgeLabel||edgeEditing===c.id) labels.push({id:c.id, text:c.edgeLabel||'', x:(p0[0]+3*p1[0]+3*p2[0]+p3[0])/8, y:(p0[1]+3*p1[1]+3*p2[1]+p3[1])/8});
     });
   }
-  edges.innerHTML=out;
+  edges.innerHTML=out+hits; drawPinEdges();
+  const editingEl=edgeEditing&&edgeLabels.querySelector('.editing');
+  if(editingEl){ const el=editingEl, at=labels.find(l=>l.id===edgeEditing); if(el&&at){ el.style.left=at.x+'px'; el.style.top=at.y+'px'; } }
+  else edgeLabels.replaceChildren(...labels.map(l=>{ const el=document.createElement('div'); el.className='edge-label'; el.dataset.edgeLabel=l.id; el.textContent=l.text; el.style.left=l.x+'px'; el.style.top=l.y+'px'; el.title='雙擊編輯線上文字'; return el; }));
   assets?.render(); relations?.render();
 }
 function applyView(){
@@ -268,7 +402,7 @@ function applyView(){
   canvas.style.backgroundSize=`${g}px ${g}px`;
   canvas.style.backgroundPosition=`${view.x}px ${view.y}px`;
   $('zLabel').textContent=Math.round(view.k*100)+'%';
-  relations?.place(); draw?.place();
+  relations?.place(); draw?.place(); placeGroupBar();
 }
 function bbox(){ let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity; for(const o of [...L.values(),...(assets?.boxes()||[]),...(cards?.boxes()||[]),...(draw?.boxes()||[])]){ a=Math.min(a,o.x); b=Math.min(b,o.y); c=Math.max(c,o.x+o.w); d=Math.max(d,o.y+o.h);} return {x0:a,y0:b,x1:c,y1:d}; }
 function fit(){
@@ -288,15 +422,18 @@ function zoomAt(px,py,f){ const k=clamp(view.k*f,.2,2.5); f=k/view.k; view.x=px-
 function zoomCenter(f){ zoomAt(canvas.clientWidth/2, canvas.clientHeight/2, f); }
 
 /* ---------------- node toolbar ---------------- */
-function hideBar(){ nodebar.classList.remove('show','colors'); }
+function hideBar(){ nodebar.classList.remove('show','colors','styling'); }
 function placeBar(){
   const info=idx.get(selectedId), o=L.get(selectedId);
   if(!info||!o||editingId||store.readOnly||drag){ hideBar(); return; }
-  const showColor=info.depth>0;
+  const showColor=info.depth>0, custom=!!(info.node.off||info.node.w||info.node.h);
+  nodebar.querySelector('[data-act="reset"]').style.display=custom?'':'none';
   nodebar.querySelector('[data-act="color"]').style.display=showColor?'':'none';
   nodebar.querySelector('[data-for="color"]').style.display=showColor?'':'none';
   nodebar.querySelector('[data-act="collapse"]').style.display=info.node.children.length?'':'none';
   nodebar.querySelector('[data-act="collapse"]').firstElementChild.style.transform=info.node.collapsed?'rotate(-90deg)':'';
+  nodebar.querySelector('[data-act="style"]').style.display=info.depth>0?'':'none';
+  nodebar.querySelectorAll('[data-nstyle]').forEach(b=>b.classList.toggle('on',b.dataset.nstyle===styleOf(info.node)));
   const pageBtn=nodebar.querySelector('[data-act="page"]'), hasPage=!!(info.node.page&&maps.has(info.node.page));
   pageBtn.title=hasPage?'開啟獨立頁面（雙擊節點）':'建立獨立頁面';
   pageBtn.querySelector('i').className='bi '+(hasPage?'bi-folder2-open':'bi-folder-plus');
@@ -314,6 +451,8 @@ function placeBar(){
 })();
 listen(nodebar, 'pointerdown', e=>e.stopPropagation());
 listen(nodebar, 'click', e=>{
+  const ns=e.target.closest('[data-nstyle]');
+  if(ns){ nodebar.classList.remove('styling'); setNodeStyle(selectedId, ns.dataset.nstyle); return; }
   const sw=e.target.closest('[data-color]');
   if(sw){ setBranchColor(sw.dataset.color); nodebar.classList.remove('colors'); return; }
   const b=e.target.closest('[data-act]'); if(!b) return;
@@ -325,6 +464,8 @@ listen(nodebar, 'click', e=>{
   else if(a==='collapse') toggleCollapse(selectedId);
   else if(a==='page') openNodePage(selectedId);
   else if(a==='view') viewNodePage(selectedId);
+  else if(a==='style'){ nodebar.classList.add('styling'); placeBar(); }
+  else if(a==='reset') resetNodeLayout(selectedId);
   else if(a==='color'){
     const info=idx.get(selectedId);
     $('swatches').querySelectorAll('button').forEach(x=>x.classList.toggle('on', x.dataset.color===(info&&info.color)));
@@ -374,6 +515,28 @@ function deleteSel(){
   selectedId = (p.children[i]||p.children[i-1]||p).id;
   renderMap(); save(currentId); renderSidebar();
 }
+function resetNodeLayout(id){
+  if(!guard()) return; const n=idx.get(id)?.node; if(!n) return;
+  snapshot(); delete n.off; delete n.w; delete n.h; renderMap(); save(currentId); toast('已還原自動排列的位置與大小');
+}
+// A node can switch to note style: a paper card that holds several lines, still part of the tree.
+function setNodeStyle(id, style){
+  if(!guard()) return; const info=idx.get(id); if(!info||!info.parent||styleOf(info.node)===style) return;
+  if(editingId) commitEdit();
+  snapshot();
+  const n=info.node, host=hostCard(n);
+  if(host){
+    const m=cur(), a=L.get(id)||{x:0,y:0,w:0,h:0};
+    const notes=(host.cards||[]).filter(c=>c.type==='note'), rest=(host.cards||[]).filter(c=>c.type!=='note');
+    n.text=[host.title||'', ...notes.map(c=>[c.title,c.text].filter(Boolean).join(' '))].filter((l,i)=>i===0||l.trim()).join('\n');
+    m.cards=m.cards.filter(c=>c!==host);
+    rest.forEach((c,i)=>{ Object.assign(c,{x:a.x+a.w+40, y:a.y+i*90, z:nextZ()}); m.cards.push(c); });
+  }
+  delete n.note; delete n.column; delete n.colCard;
+  if(style==='note') n.note=true; else if(style==='column') n.column=true; else n.text=n.text.replace(/\s+/g,' ').trim();
+  renderMap(); save(currentId);
+  toast(style==='note'?'已轉成筆記：第一行是標題，按 Shift+Enter 換行寫內文':style==='column'?'已轉成欄位：可以把卡片或圖片拖進來':'已轉回一般節點');
+}
 function toggleCollapse(id){
   if(!guard()) return; const info=idx.get(id); if(!info||!info.node.children.length) return;
   snapshot(); info.node.collapsed=!info.node.collapsed;
@@ -385,10 +548,10 @@ function setBranchColor(c){
   while(info.depth>1) info=idx.get(info.parent.id);
   snapshot(); info.node.color=c; renderMap(); save(currentId);
 }
-function moveNode(id, targetId){
+function moveNode(id, targetId, snapped){
   if(!guard()) return; const a=idx.get(id), t=idx.get(targetId); if(!a||!t||!a.parent) return;
   if(id===targetId || isAncestor(id,targetId) || a.parent.id===targetId) return;
-  snapshot();
+  if(!snapped) snapshot();
   a.parent.children.splice(a.parent.children.indexOf(a.node),1);
   if(t.depth===0) a.node.color = a.node.color || nextColor(t.node);
   t.node.collapsed=false; t.node.children.push(a.node);
@@ -405,6 +568,8 @@ function startEdit(id, initial, fresh){
   if(el.contentEditable!=='plaintext-only') el.contentEditable='true';
   el.className+=' editing';
   if(initial!=null){ el.textContent=initial; info.node.text=initial; }
+  else if(multiLine(info.node)) el.textContent=info.node.text;
+  el._painted=null;
   hideBar(); el.focus({preventScroll:true});
   const r=document.createRange(); r.selectNodeContents(el); if(initial!=null) r.collapse(false);
   const s=window.getSelection(); s.removeAllRanges(); s.addRange(r);
@@ -415,7 +580,11 @@ function commitEdit(){
   const el=els.get(id), info=idx.get(id);
   if(el){ el.contentEditable='false'; }
   if(info){
-    const t=(el?el.textContent:info.node.text).replace(/\s+/g,' ').trim();
+    // Note-style nodes keep their line breaks; plain nodes stay on one line.
+    const raw=el?el.textContent:info.node.text;
+    let t=multiLine(info.node) ? raw.replace(/\r/g,'').replace(/[ \t]+$/gm,'').replace(/\n{3,}/g,'\n\n').replace(/\s+$/,'') : raw.replace(/\s+/g,' ').trim();
+    // A title left empty switches the title off instead of promoting the first body line.
+    if(multiLine(info.node)){ if(info.node.titled && /^\s*\n/.test(t)){ t=t.replace(/^\s*\n/,''); info.node.titled=false; } t=t.replace(/^\s+/,''); }
     info.node.text=t;
     if(!editFresh && t===editOrig) dropSnapshot(); else save(currentId);
   }
@@ -432,7 +601,7 @@ listen(world, 'keydown', e=>{
   if(!editingId) return;
   if(e.isComposing || e.keyCode===229) return;
   if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); commitEdit(); }
-  else if(e.key==='Enter' && e.shiftKey){ e.preventDefault(); }
+  else if(e.key==='Enter' && e.shiftKey){ if(!multiLine(idx.get(editingId)?.node)) e.preventDefault(); }
   else if(e.key==='Tab'){ e.preventDefault(); commitEdit(); addChild(); }
   else if(e.key==='Escape'){ e.preventDefault(); commitEdit(); }
   e.stopPropagation();
@@ -440,7 +609,7 @@ listen(world, 'keydown', e=>{
 listen(world, 'focusout', e=>{ if(editingId && e.target===els.get(editingId)) commitEdit(); });
 listen(world, 'paste', e=>{
   if(!editingId) return; e.preventDefault();
-  const t=(e.clipboardData||window.clipboardData).getData('text').replace(/\s+/g,' ');
+  const raw=(e.clipboardData||window.clipboardData).getData('text'), t=multiLine(idx.get(editingId)?.node) ? raw.replace(/\r/g,'') : raw.replace(/\s+/g,' ');
   document.execCommand('insertText', false, t);
 });
 
@@ -448,11 +617,16 @@ listen(world, 'paste', e=>{
 const ptrs=new Map(); let gesture=null, drag=null, ghost=null;
 listen(canvas, 'pointerdown', e=>{
   if(e.pointerType==='mouse' && e.button!==0) return;
-  if(e.target.closest('.zoombar,.empty-state,.nodebar,.card,.draw-panel')) return;
+  if(e.target.closest('.zoombar,.empty-state,.nodebar,.card,.draw-panel,.edge-label.editing')) return;
   closePops();
   ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
   if(ptrs.size===2){ endDrag(false); const p=[...ptrs.values()]; gesture={type:'pinch', d:Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y), mx:(p[0].x+p[1].x)/2, my:(p[0].y+p[1].y)/2}; return; }
   if(ptrs.size>2) return;
+  if(e.target.closest('.node-grip') && selectedId && !store.readOnly){
+    const el=els.get(selectedId), n=idx.get(selectedId)?.node; if(!el||!n) return;
+    snapshot(); gesture={type:'resize', id:selectedId, sx:e.clientX, sy:e.clientY, w:el.offsetWidth, h:el.offsetHeight, moved:false}; hideBar();
+    return;
+  }
   const chip=e.target.closest('.chip');
   if(chip){ toggleCollapse(chip.dataset.toggle); gesture=null; return; }
   const nodeEl=e.target.closest('.node');
@@ -460,7 +634,7 @@ listen(canvas, 'pointerdown', e=>{
     const id=nodeEl.dataset.id;
     if(id===editingId) return;
     if(editingId) commitEdit();
-    if(selectedId!==id){ selectedId=id; renderMap(); }
+    if(selectedId!==id){ selectedId=id; nodebar.classList.remove('styling','colors'); renderMap(); }
     else nodebar.classList.remove('colors');
     canvas.focus({preventScroll:true});
     gesture={type:'press', id, sx:e.clientX, sy:e.clientY};
@@ -486,11 +660,17 @@ listen(window, 'pointermove', e=>{
   } else if(gesture.type==='press'){
     if(Math.hypot(e.clientX-gesture.sx,e.clientY-gesture.sy)>6){
       const info=idx.get(gesture.id);
-      if(!store.readOnly && info && info.depth>0){ startDrag(gesture.id, e); gesture.type='drag'; }
+      if(!store.readOnly && info && info.depth>0){ startDrag(gesture.id, e, gesture.sx, gesture.sy); gesture.type='drag'; }
       else if(!store.readOnly && info){ snapshot(); Object.assign(gesture,{type:'tree', tree:info.tree, ox:info.tree.x, oy:info.tree.y}); hideBar(); }
       else { gesture.type='pan'; canvas.classList.add('panning'); }
     }
   } else if(gesture.type==='drag'){ moveDrag(e); }
+  else if(gesture.type==='resize'){
+    const n=idx.get(gesture.id)?.node; if(!n) return; gesture.moved=true;
+    n.w=Math.round(clamp(gesture.w+(e.clientX-gesture.sx)/view.k, 60, 900));
+    n.h=Math.round(clamp(gesture.h+(e.clientY-gesture.sy)/view.k, 24, 900));
+    renderMap(); hideBar();
+  }
   else if(gesture.type==='tree'){ setTreePos(gesture.tree, Math.round(gesture.ox+(e.clientX-gesture.sx)/view.k), Math.round(gesture.oy+(e.clientY-gesture.sy)/view.k)); renderMap(); }
 });
 function upHandler(e){
@@ -498,34 +678,66 @@ function upHandler(e){
   ptrs.delete(e.pointerId);
   if(gesture && gesture.type==='drag') endDrag(e.type==='pointerup');
   if(gesture && gesture.type==='tree') save(currentId);
+  if(gesture && gesture.type==='resize'){ if(gesture.moved) save(currentId); else dropSnapshot(); placeBar(); }
   if(ptrs.size===0 || (gesture && gesture.type==='pinch')){ gesture=null; }
   canvas.classList.remove('panning');
 }
 listen(window, 'pointerup', upHandler);
 listen(window, 'pointercancel', upHandler);
 
-function startDrag(id, e){
-  drag={id, target:null};
-  ghost=document.createElement('div'); ghost.className='ghost';
-  ghost.textContent=(idx.get(id).node.text||'輸入文字'); document.body.appendChild(ghost);
-  hideBar(); moveDrag(e); renderMap();
+// Dragging a node moves it live: dropped on another node it becomes that node's child, dropped elsewhere it stays put.
+function startDrag(id, e, px, py){
+  const n=idx.get(id).node;
+  snapshot();
+  drag={id, target:null, sx:px??e.clientX, sy:py??e.clientY, ox:n.off?.x||0, oy:n.off?.y||0};
+  hideBar(); moveDrag(e);
 }
 function moveDrag(e){
   if(!drag) return;
-  ghost.style.transform=`translate(${e.clientX+12}px,${e.clientY+12}px)`;
-  const el=document.elementFromPoint(e.clientX,e.clientY);
-  const n=el&&el.closest&&el.closest('.node');
-  let t=n&&n.dataset.id||null;
-  if(t && (t===drag.id || isAncestor(drag.id,t))) t=null;
-  if(t!==drag.target){ drag.target=t; renderMap(); }
+  const n=idx.get(drag.id)?.node; if(!n) return;
+  n.off={x:Math.round(drag.ox+(e.clientX-drag.sx)/view.k), y:Math.round(drag.oy+(e.clientY-drag.sy)/view.k)};
+  const hit=document.elementsFromPoint(e.clientX,e.clientY).find(el=>el.classList?.contains('node')&&el.dataset.id&&el.dataset.id!==drag.id&&!isAncestor(drag.id,el.dataset.id));
+  const info=idx.get(drag.id); let t=hit?.dataset.id||null;
+  if(t && info?.parent?.id===t) t=null;
+  drag.target=t; renderMap();
 }
 function endDrag(drop){
   if(!drag) return; const d=drag; drag=null;
-  if(ghost){ ghost.remove(); ghost=null; }
-  if(drop && d.target) moveNode(d.id, d.target); else renderMap();
+  const n=idx.get(d.id)?.node;
+  if(drop && d.target){ if(n) delete n.off; moveNode(d.id, d.target, true); return; }
+  if(n && !drop){ if(d.ox||d.oy) n.off={x:d.ox,y:d.oy}; else delete n.off; dropSnapshot(); }
+  else if(n && n.off && !n.off.x && !n.off.y) delete n.off;
+  renderMap(); if(drop) save(currentId);
 }
 
+function editEdgeLabel(id){
+  const info=idx.get(id); if(!info||!info.parent||store.readOnly) return;
+  if(editingId) commitEdit();
+  hideBar(); snapshot(); edgeEditing=id; drawEdges();
+  const el=edgeLabels.querySelector(`[data-edge-label="${CSS.escape(id)}"]`); if(!el){ edgeEditing=null; dropSnapshot(); return; }
+  el.classList.add('editing');
+  try{ el.contentEditable='plaintext-only'; }catch(err){} if(el.contentEditable!=='plaintext-only') el.contentEditable='true';
+  el.focus({preventScroll:true}); const r=document.createRange(); r.selectNodeContents(el); const s=window.getSelection(); s.removeAllRanges(); s.addRange(r);
+}
+function commitEdgeLabel(cancel){
+  const id=edgeEditing; if(!id) return; edgeEditing=null;
+  const el=edgeLabels.querySelector('.editing'), info=idx.get(id);
+  const before=info?.node.edgeLabel||'', t=cancel?before:(el?.textContent||'').replace(/\s+/g,' ').trim();
+  if(info){ if(t) info.node.edgeLabel=t; else delete info.node.edgeLabel; }
+  if(t===before) dropSnapshot(); else save(currentId);
+  drawEdges();
+}
+listen(edgeLabels,'keydown',e=>{
+  if(!edgeEditing||e.isComposing||e.keyCode===229) return;
+  if(e.key==='Enter'||e.key==='Escape'){ e.preventDefault(); commitEdgeLabel(false); canvas.focus({preventScroll:true}); }
+  e.stopPropagation();
+});
+listen(edgeLabels,'focusout',e=>{ if(edgeEditing&&e.target.classList.contains('editing')) commitEdgeLabel(false); });
+listen(edgeLabels,'paste',e=>{ if(!edgeEditing) return; e.preventDefault(); e.stopPropagation(); document.execCommand('insertText',false,(e.clipboardData?.getData('text')||'').replace(/\s+/g,' ')); });
 listen(canvas, 'dblclick', e=>{
+  // Double-clicking a branch line (or its text) writes on the line.
+  const hit=e.target.closest?.('[data-edge],[data-edge-label]') || document.elementFromPoint(e.clientX,e.clientY)?.closest?.('[data-edge],[data-edge-label]');
+  if(hit && !e.target.closest('.node,.card')){ e.preventDefault(); editEdgeLabel(hit.dataset.edge||hit.dataset.edgeLabel); return; }
   const n=e.target.closest('.node');
   if(!n || n.dataset.id===editingId) return;
   e.preventDefault();
@@ -605,6 +817,404 @@ function viewNodePage(id){
   if(editingId) commitEdit();
   const pid=ensureNodePage(info); if(pid) openViewer(pid);
 }
+/* ---------------- clipboard ---------------- */
+// Ctrl+C / Ctrl+X / Ctrl+V copy cards, images, drawings and branches between maps and pages (and across windows of the app).
+const CLIP_TYPE='application/x-yozumind+json';
+let clip=null, pasteCount=0, lastPointer=null;
+listen(canvas,'pointermove',e=>{ lastPointer={x:e.clientX, y:e.clientY}; });
+listen(canvas,'pointerleave',()=>{ lastPointer=null; });
+function typingIn(t){ return t && (t.closest?.('input,textarea') || t.isContentEditable); }
+function clipSelection(){
+  if(groupSize()) return {kind:'group', items:[groupData()], label:`${groupSize()} 個物件`};
+  const strokes=draw?.selection()||[]; if(strokes.length) return {kind:'strokes', items:strokes, label:`${strokes.length} 筆塗鴉`};
+  const card=cards?.selection(); if(card) return {kind:'card', items:[card], label:card.text||card.title||card.url||'卡片'};
+  const image=assets?.selection(); if(image) return {kind:'image', items:[image], label:'圖片'};
+  const info=selectedId&&idx.get(selectedId); if(info) return {kind:'node', items:[info.node], label:info.node.text||'節點'};
+  return null;
+}
+function onCopy(e, cutting){
+  if(typingIn(e.target) || String(window.getSelection())) return;
+  const sel=clipSelection(); if(!sel||!cur()) return;
+  e.preventDefault();
+  clip={kind:sel.kind, items:JSON.parse(JSON.stringify(sel.items)), text:sel.label};
+  e.clipboardData?.setData('text/plain', sel.label); e.clipboardData?.setData(CLIP_TYPE, JSON.stringify(clip));
+  pasteCount=0;
+  if(!cutting){ toast('已複製，可到任何心智圖或頁面按 Ctrl+V 貼上'); return; }
+  if(store.readOnly) return;
+  if(sel.kind==='group') deleteGroup(); else if(sel.kind==='strokes') draw.cut(); else if(sel.kind==='card') cards.cut(); else if(sel.kind==='image') assets.cut(); else deleteSel();
+  renderSidebar(); toast('已剪下，到要放的位置按 Ctrl+V 貼上');
+}
+// Canvas pointer handlers cancel the default focus change, so each window (main or side viewer) claims focus itself to receive shortcuts.
+listen(document,'pointerdown',e=>{
+  if(document.activeElement?.tagName==='IFRAME' && !e.target.closest?.('iframe')) document.activeElement.blur();
+  if(!document.hasFocus()) window.focus();
+},true);
+listen(document,'copy',e=>onCopy(e,false));
+listen(document,'cut',e=>onCopy(e,true));
+// Fresh ids everywhere, keeping each id's prefix (c-, n-, i-, img-, s-).
+function reId(value){
+  if(Array.isArray(value)) return value.map(reId);
+  if(!value||typeof value!=='object') return value;
+  const out={}; for(const [k,v] of Object.entries(value)) out[k]=k==='id'&&typeof v==='string' ? uid(v.split('-')[0]) : reId(v);
+  return out;
+}
+// A pasted page link takes the page along: an orphaned page (left by a cut) moves here, a page still in use is duplicated.
+function adoptPages(items){
+  const relink=id=>{
+    const page=maps.get(id); if(!page) return id;
+    const owner=page.parentId&&maps.get(page.parentId);
+    if(!owner||!boardRefs(owner).has(id)){ page.parentId=currentId; save(id); return id; }
+    return duplicatePage(id, currentId);
+  };
+  (function walk(v){ if(Array.isArray(v)) return v.forEach(walk); if(!v||typeof v!=='object') return;
+    if(v.type==='board'&&v.mapId) v.mapId=relink(v.mapId);
+    if(typeof v.page==='string'&&!('type' in v)) v.page=relink(v.page);
+    Object.values(v).forEach(walk); })(items);
+}
+function duplicatePage(id, parentId){
+  const src=maps.get(id), copy=JSON.parse(JSON.stringify(src));
+  Object.assign(copy,{id:uid('m'), parentId, createdAt:Date.now(), updatedAt:Date.now(), rev:''});
+  if(copy.root) copy.root=reId(copy.root);
+  copy.trees=reId(copy.trees||[]); copy.cards=reId(copy.cards||[]); copy.images=reId(copy.images||[]); copy.strokes=reId(copy.strokes||[]); copy.relations=[];
+  maps.set(copy.id,copy); save(copy.id,true);
+  adoptPagesIn(copy);
+  return copy.id;
+}
+function adoptPagesIn(m){
+  const prev=currentId; currentId=m.id;
+  try{ adoptPages([m.cards, m.root, m.trees]); } finally { currentId=prev; }
+}
+function pastePoint(){
+  const r=canvas.getBoundingClientRect(), off=24*(pasteCount++%8);
+  const sx=lastPointer?lastPointer.x-r.left:canvas.clientWidth/2, sy=lastPointer?lastPointer.y-r.top:canvas.clientHeight/2;
+  return {x:(sx-view.x)/view.k+off, y:(sy-view.y)/view.k+off};
+}
+listen(document,'paste',e=>{
+  if(typingIn(e.target)) return;
+  const docs=[...(e.clipboardData?.files||[])].filter(fileKind);
+  if(docs.length){ e.preventDefault(); e.stopImmediatePropagation(); cards?.addFiles(docs, pastePoint()); return; }
+  let data=null;
+  try{ const raw=e.clipboardData?.getData(CLIP_TYPE); if(raw) data=JSON.parse(raw); }catch(err){}
+  if(!data && clip && e.clipboardData?.getData('text/plain')===clip.text && !e.clipboardData?.files?.length) data=clip;
+  if(!data || !Array.isArray(data.items) || !data.items.length) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  const m=cur(); if(!m){ toast('請先建立或開啟一張心智圖'); return; }
+  if(store.readOnly){ toast('你目前只有檢視權限'); return; }
+  if(editingId) commitEdit();
+  const items=reId(data.items), at=pastePoint();
+  (function unpin(v){ if(Array.isArray(v)) return v.forEach(unpin); if(v&&typeof v==='object'){ delete v.anchor; Object.values(v).forEach(unpin); } })(items);
+  adoptPages(items);
+  if(data.kind==='group') pasteGroup(items[0], at);
+  else if(data.kind==='card') cards.paste(items[0], at);
+  else if(data.kind==='image') assets.paste(items[0], at);
+  else if(data.kind==='strokes'){ if(!draw) return; draw.paste(items, at); }
+  else if(data.kind==='node'){
+    const node=sanitize(items[0]), parent=selectedId&&idx.get(selectedId);
+    snapshot();
+    if(parent){ parent.node.collapsed=false; parent.node.children.push(node); }
+    else { m.trees ||= []; m.trees.push({id:uid('t'), x:Math.round(at.x), y:Math.round(at.y), root:node}); }
+    cards?.deselect(); assets?.deselect(); relations?.deselect();
+    selectedId=node.id; renderMap(); ensureVisible(node.id); save(currentId);
+  }
+  renderSidebar();
+}, true);
+// Files dragged in from the desktop: documents become file cards (inside a column or folder when dropped on one), images become canvas images.
+listen(canvas,'dragover',e=>{ if(e.dataTransfer?.types.includes('Files')){ e.preventDefault(); e.dataTransfer.dropEffect=store.readOnly?'none':'copy'; } });
+listen(canvas,'drop',e=>{
+  const files=[...(e.dataTransfer?.files||[])]; if(!files.length) return;
+  e.preventDefault();
+  const r=canvas.getBoundingClientRect(), at={x:(e.clientX-r.left-view.x)/view.k, y:(e.clientY-r.top-view.y)/view.k};
+  const box=document.elementFromPoint(e.clientX,e.clientY)?.closest('.card-column,.card-folder');
+  const docs=files.filter(fileKind), images=files.filter(f=>f.type.startsWith('image/'));
+  if(docs.length) cards?.addFiles(docs, at, box?.dataset.id||null);
+  if(images.length) assets?.addFiles(images);
+  if(!docs.length && !images.length) toast('只支援 PDF、Word、Excel 檔案與圖片');
+});
+listen($('attachBtn'),'click',()=>{ $('attachFile').value=''; $('attachFile').click(); });
+listen($('attachFile'),'change',()=>{ const files=[...$('attachFile').files]; if(files.length) cards?.addFiles(files, pastePoint()); });
+/* ---------------- objects pinned to nodes ---------------- */
+// A top-level card or canvas image can hang from a node (anchor: {node, dx, dy} relative to the node's box):
+// it follows the node when the layout moves and hides while any ancestor is collapsed.
+let pinHidden=new Set();
+const pinnedObjects=m=>[...(m?.cards||[]), ...(m?.images||[])].filter(o=>o.anchor);
+function syncPins(){
+  pinHidden=new Set(); const m=cur(); if(!m) return;
+  for(const o of pinnedObjects(m)){
+    const info=idx.get(o.anchor.node);
+    if(!info){ delete o.anchor; continue; }
+    const b=L.get(o.anchor.node);
+    if(!b){ pinHidden.add(o.id); continue; }
+    // While a group drag carries the object but not its mind map, let it move freely.
+    if(groupDrag?.moved && (group?.cards.has(o.id)||group?.images.has(o.id)) && !group.trees.has(info.tree.root.id)) continue;
+    o.x=b.x+o.anchor.dx; o.y=b.y+o.anchor.dy;
+  }
+}
+function pinBox(o){ return o.src!==undefined&&o.w ? o : cards?.box(o.id); }
+function drawPinEdges(){
+  const m=cur(); let out='';
+  for(const o of pinnedObjects(m)){
+    if(pinHidden.has(o.id)||hostOf(o.id)) continue;
+    const a=L.get(o.anchor.node), b=pinBox(o), info=idx.get(o.anchor.node); if(!a||!b) continue;
+    const acx=a.x+a.w/2, acy=a.y+a.h/2, bcx=b.x+b.w/2, bcy=b.y+b.h/2, vertical=Math.abs(bcy-acy)*1.2>=Math.abs(bcx-acx);
+    let d;
+    if(vertical){ const sy=bcy>acy?a.y+a.h:a.y, ey=bcy>acy?b.y:b.y+b.h, my=(sy+ey)/2; d=`M${acx} ${sy} C${acx} ${my} ${bcx} ${my} ${bcx} ${ey}`; }
+    else { const sx=bcx>acx?a.x+a.w:a.x, ex=bcx>acx?b.x:b.x+b.w, mx=(sx+ex)/2; d=`M${sx} ${acy} C${mx} ${acy} ${mx} ${bcy} ${ex} ${bcy}`; }
+    const color=info.depth===0?'var(--ink-2)':info.color;
+    out+=`<path d="${d}" stroke="${color}"/><circle cx="${vertical?acx:(bcx>acx?a.x+a.w:a.x)}" cy="${vertical?(bcy>acy?a.y+a.h:a.y):acy}" r="3.5" fill="${color}"/>`;
+  }
+  pinEdges.innerHTML=out;
+}
+function objectById(m,id){ return (m?.cards||[]).find(c=>c.id===id)||(m?.images||[]).find(i=>i.id===id); }
+function nodeAtPoint(x,y){ return document.elementsFromPoint(x,y).find(el=>el.classList?.contains('node')&&el.dataset.id&&L.has(el.dataset.id)); }
+// After a card or image is dropped: onto a node pins it there; a pinned object keeps following its node unless dragged far away.
+function objectMoved(id, cx, cy){
+  const m=cur(), o=objectById(m,id); if(!o||store.readOnly) return;
+  clearAttachHint();
+  const hostNode=hostOf(id);
+  if(hostNode){
+    const n=idx.get(hostNode).node, a=L.get(hostNode); if(!a) return;
+    n.off={x:Math.round((n.off?.x||0)+o.x-a.x), y:Math.round((n.off?.y||0)+o.y-a.y)};
+    save(currentId); renderMap(); return;
+  }
+  const target=cx!=null&&nodeAtPoint(cx,cy);
+  if(target){
+    const nid=target.dataset.id, a=L.get(nid), b=pinBox(o)||{w:o.w||240,h:o.h||80}, info=idx.get(nid);
+    // Park the object just below (or right of) the node so it doesn't cover it.
+    if(isDown()){ o.x=a.x+a.w/2-b.w/2; o.y=a.y+a.h+48; } else { o.x=a.x+a.w+48; o.y=a.y+a.h/2-b.h/2; }
+    o.anchor={node:nid, dx:o.x-a.x, dy:o.y-a.y};
+    save(currentId); renderMap(); assets?.render();
+    toast(`已掛到「${(info.node.text||'節點').slice(0,20)}」，收合時會一起收起`);
+    return;
+  }
+  if(!o.anchor) return;
+  const a=L.get(o.anchor.node), b=pinBox(o); if(!a||!b) return;
+  const gap=Math.max(b.x-(a.x+a.w), a.x-(b.x+b.w), b.y-(a.y+a.h), a.y-(b.y+b.h), 0);
+  if(gap>480){ delete o.anchor; toast('已取消掛載（拖離節點太遠）'); }
+  else o.anchor={node:o.anchor.node, dx:o.x-a.x, dy:o.y-a.y};
+  save(currentId); drawPinEdges();
+}
+// 掛到節點 from a card or image toolbar: the next click on a node pins the object there.
+let pinPick=null;
+function pinStart(id){ pinPick=id; canvas.classList.add('pin-picking'); toast('點選要掛上的心智圖節點（Esc 取消）'); }
+function pinStop(){ pinPick=null; canvas.classList.remove('pin-picking'); clearAttachHint(); }
+listen(canvas,'pointerdown',e=>{
+  if(!pinPick) return;
+  // The node may sit under the very object being pinned, so look through everything at the pointer.
+  const n=nodeAtPoint(e.clientX,e.clientY), id=pinPick;
+  e.preventDefault(); e.stopImmediatePropagation(); pinStop();
+  if(!n){ toast('已取消'); return; }
+  const m=cur(), o=objectById(m,id), a=L.get(n.dataset.id); if(!o||!a) return;
+  snapshot();
+  const b=pinBox(o)||{w:o.w||240,h:o.h||80};
+  if(isDown()){ o.x=a.x+a.w/2-b.w/2; o.y=a.y+a.h+48; } else { o.x=a.x+a.w+48; o.y=a.y+a.h/2-b.h/2; }
+  o.anchor={node:n.dataset.id, dx:o.x-a.x, dy:o.y-a.y};
+  save(currentId); renderMap(); assets?.render();
+  toast(`已掛到「${(idx.get(n.dataset.id)?.node.text||'節點').slice(0,20)}」，收合時會一起收起`);
+},true);
+listen(canvas,'pointermove',e=>{ if(!pinPick) return; const n=nodeAtPoint(e.clientX,e.clientY)||null; if(n!==attachHint){ clearAttachHint(); if(n){ n.classList.add('attach-target'); attachHint=n; } } });
+listen(document,'keydown',e=>{ if(pinPick&&e.key==='Escape'){ e.stopImmediatePropagation(); pinStop(); } },true);
+// A relation line between a node and a card or image can be turned into a pin.
+function relationPin(r){
+  const m=cur(), [node,other]=idx.has(r.from)?[r.from,r.to]:[r.to,r.from];
+  if(!idx.has(node)||idx.has(other)) return null;
+  const o=objectById(m,other); return o&&L.has(node) ? {node,o} : null;
+}
+function pinFromRelation(r){
+  const p=relationPin(r); if(!p||store.readOnly) return false;
+  const m=cur(), a=L.get(p.node);
+  snapshot();
+  p.o.anchor={node:p.node, dx:p.o.x-a.x, dy:p.o.y-a.y};
+  m.relations=(m.relations||[]).filter(x=>x!==r);
+  save(currentId); renderMap(); assets?.render();
+  toast(`已改成掛在「${(idx.get(p.node)?.node.text||'節點').split('\n')[0].slice(0,20)}」，收合時會一起收起`);
+  return true;
+}
+let attachHint=null;
+function clearAttachHint(){ attachHint?.classList.remove('attach-target'); attachHint=null; }
+listen(window,'pointermove',e=>{
+  if(!(e.buttons&1)||!document.querySelector('.card.dragging,.canvas-image.dragging')){ if(attachHint) clearAttachHint(); return; }
+  const n=nodeAtPoint(e.clientX,e.clientY)||null;
+  if(n!==attachHint){ clearAttachHint(); if(n){ n.classList.add('attach-target'); attachHint=n; } }
+});
+// Objects pinned under a collapsed node count toward its badge.
+function pinsUnder(n){ const m=cur(), ids=new Set(); (function walk(x){ ids.add(x.id); x.children.forEach(walk); })(n); ids.delete(n.id); return pinnedObjects(m).filter(o=>ids.has(o.anchor.node)||o.anchor.node===n.id).length; }
+/* ---------------- marquee selection ---------------- */
+// The 框選 tool (or Shift+drag on empty canvas) selects cards, images, drawings and whole mind maps inside a box;
+// the group then moves, copies, cuts and deletes together.
+const groupLayer=document.createElement('div'); groupLayer.className='group-layer'; world.append(groupLayer);
+let selectMode=false, group=null, marq=null, groupDrag=null;
+const groupSize=()=>group ? group.cards.size+group.images.size+group.strokes.size+group.trees.size : 0;
+function treeOfRoot(m, rootId){ return treesOf(m).find(t=>t.root.id===rootId); }
+function treeBox(t){ let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity; (function walk(n){ const o=L.get(n.id); if(o){ a=Math.min(a,o.x); b=Math.min(b,o.y); c=Math.max(c,o.x+o.w); d=Math.max(d,o.y+o.h); } if(!n.collapsed) n.children.forEach(walk); })(t.root); return Number.isFinite(a)?{x:a,y:b,w:c-a,h:d-b}:null; }
+function groupBoxes(){
+  const m=cur(), out=[]; if(!m||!group) return out;
+  for(const b of cards?.boxes()||[]) if(group.cards.has(b.id)) out.push(b);
+  for(const i of m.images||[]) if(group.images.has(i.id)) out.push(i);
+  const sb=draw?.boxes()||[]; (m.strokes||[]).forEach((s,i)=>{ if(group.strokes.has(s.id)&&sb[i]) out.push(sb[i]); });
+  for(const id of group.trees){ const t=treeOfRoot(m,id), b=t&&treeBox(t); if(b) out.push(b); }
+  return out;
+}
+function selectInRect(r){
+  const m=cur(), hit=b=>b&&b.x<r.x+r.w&&b.x+b.w>r.x&&b.y<r.y+r.h&&b.y+b.h>r.y;
+  group={cards:new Set, images:new Set, strokes:new Set, trees:new Set};
+  for(const b of cards?.boxes()||[]) if(hit(b)) group.cards.add(b.id);
+  for(const i of m.images||[]) if(hit(i)) group.images.add(i.id);
+  const sb=draw?.boxes()||[]; (m.strokes||[]).forEach((s,i)=>{ if(hit(sb[i])) group.strokes.add(s.id); });
+  // A mind map joins when the box touches its central topic, and then moves as a whole.
+  for(const t of treesOf(m)) if(hit(L.get(t.root.id))) group.trees.add(t.root.id);
+  if(!groupSize()) group=null;
+}
+function clearGroup(){ if(!group) return; group=null; renderGroup(); }
+function renderGroup(){
+  const m=cur();
+  if(group&&m){
+    const ids=new Set((m.cards||[]).map(c=>c.id)); for(const id of group.cards) if(!ids.has(id)) group.cards.delete(id);
+    const imgs=new Set((m.images||[]).map(i=>i.id)); for(const id of group.images) if(!imgs.has(id)) group.images.delete(id);
+    const sts=new Set((m.strokes||[]).map(s=>s.id)); for(const id of group.strokes) if(!sts.has(id)) group.strokes.delete(id);
+    for(const id of group.trees) if(!treeOfRoot(m,id)) group.trees.delete(id);
+    if(!groupSize()) group=null;
+  }
+  const boxes=groupBoxes();
+  groupLayer.replaceChildren();
+  if(!boxes.length){ $('groupBar').classList.remove('show'); return; }
+  let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity;
+  for(const o of boxes){ const r=document.createElement('div'); r.className='group-item'; Object.assign(r.style,{left:o.x+'px',top:o.y+'px',width:o.w+'px',height:o.h+'px'}); groupLayer.append(r); a=Math.min(a,o.x); b=Math.min(b,o.y); c=Math.max(c,o.x+o.w); d=Math.max(d,o.y+o.h); }
+  const box=document.createElement('div'); box.className='group-box'; box.title='拖曳一起移動';
+  Object.assign(box.style,{left:(a-8)+'px',top:(b-8)+'px',width:(c-a+16)+'px',height:(d-b+16)+'px'}); groupLayer.append(box);
+  $('groupCount').textContent=`已選取 ${groupSize()} 個物件`;
+  $('groupBar').classList.add('show'); placeGroupBar();
+}
+function placeGroupBar(){
+  const box=groupLayer.querySelector('.group-box'), bar=$('groupBar'); if(!box||!bar.classList.contains('show')) return;
+  const x=parseFloat(box.style.left), y=parseFloat(box.style.top), w=parseFloat(box.style.width), h=parseFloat(box.style.height);
+  const bw=bar.offsetWidth, bh=bar.offsetHeight, cw=canvas.clientWidth;
+  let top=view.y+y*view.k-bh-8; if(top<8) top=view.y+(y+h)*view.k+8;
+  bar.style.left=clamp(view.x+(x+w/2)*view.k-bw/2, 8, Math.max(8,cw-bw-8))+'px'; bar.style.top=top+'px';
+}
+function moveGroup(dx, dy){
+  const m=cur();
+  for(const c of m.cards||[]) if(group.cards.has(c.id)){ c.x+=dx; c.y+=dy; }
+  for(const i of m.images||[]) if(group.images.has(i.id)){ i.x+=dx; i.y+=dy; }
+  for(const s of m.strokes||[]) if(group.strokes.has(s.id)) s.points=s.points.map(([x,y])=>[x+dx,y+dy]);
+  for(const id of group.trees){ if(m.root&&m.root.id===id){ m.rootX=(m.rootX||0)+dx; m.rootY=(m.rootY||0)+dy; } else { const t=(m.trees||[]).find(t=>t.root.id===id); if(t){ t.x+=dx; t.y+=dy; } } }
+}
+function deleteGroup(){
+  const m=cur(); if(!m||!groupSize()||store.readOnly) return;
+  snapshot();
+  const gone=new Set([...group.cards, ...group.images, ...group.strokes]);
+  (function walk(list){ for(const c of list||[]){ gone.add(c.id); walk(c.cards); } })((m.cards||[]).filter(c=>group.cards.has(c.id)));
+  for(const id of group.trees){ const t=treeOfRoot(m,id); if(t) (function walk(n){ gone.add(n.id); n.children.forEach(walk); })(t.root); }
+  m.cards=(m.cards||[]).filter(c=>!group.cards.has(c.id));
+  m.images=(m.images||[]).filter(i=>!group.images.has(i.id));
+  m.strokes=(m.strokes||[]).filter(s=>!group.strokes.has(s.id));
+  m.trees=(m.trees||[]).filter(t=>!group.trees.has(t.root.id));
+  if(m.root&&group.trees.has(m.root.id)){ const next=m.trees.shift(); m.root=next?next.root:null; m.rootX=next?next.x:0; m.rootY=next?next.y:0; }
+  m.relations=(m.relations||[]).filter(r=>!gone.has(r.from)&&!gone.has(r.to));
+  const n=groupSize(); group=null; selectedId=null;
+  renderMap(); draw?.render(true); save(currentId); renderSidebar();
+  toast(`已刪除 ${n} 個物件`);
+}
+// A self-contained copy of the group: card/image/stroke data plus each mind map with its position.
+function groupData(){
+  const m=cur();
+  return JSON.parse(JSON.stringify({
+    cards:(m.cards||[]).filter(c=>group.cards.has(c.id)),
+    images:(m.images||[]).filter(i=>group.images.has(i.id)),
+    strokes:(m.strokes||[]).filter(s=>group.strokes.has(s.id)),
+    trees:treesOf(m).filter(t=>group.trees.has(t.root.id)).map(t=>({x:t.x, y:t.y, root:t.root})),
+  }));
+}
+function pasteGroup(g, at){
+  const m=cur(); if(!g) return;
+  const xs=[...(g.cards||[]).map(c=>c.x), ...(g.images||[]).map(i=>i.x), ...(g.strokes||[]).flatMap(s=>s.points.map(p=>p[0])), ...(g.trees||[]).map(t=>t.x)];
+  const ys=[...(g.cards||[]).map(c=>c.y), ...(g.images||[]).map(i=>i.y), ...(g.strokes||[]).flatMap(s=>s.points.map(p=>p[1])), ...(g.trees||[]).map(t=>t.y)];
+  if(!xs.length) return;
+  const dx=at.x-Math.min(...xs), dy=at.y-Math.min(...ys);
+  snapshot();
+  group={cards:new Set, images:new Set, strokes:new Set, trees:new Set};
+  for(const c of g.cards||[]){ c.x=Math.round(c.x+dx); c.y=Math.round(c.y+dy); c.z=nextZ(); (m.cards ||= []).push(c); group.cards.add(c.id); }
+  for(const i of g.images||[]){ i.x+=dx; i.y+=dy; i.z=nextZ(); (m.images ||= []).push(i); group.images.add(i.id); }
+  for(const s of g.strokes||[]){ s.points=s.points.map(([x,y])=>[x+dx,y+dy]); s.z=nextZ(); (m.strokes ||= []).push(s); group.strokes.add(s.id); }
+  for(const t of g.trees||[]){ const root=sanitize(t.root); (m.trees ||= []).push({id:uid('t'), x:Math.round(t.x+dx), y:Math.round(t.y+dy), root}); group.trees.add(root.id); }
+  selectedId=null; cards?.deselect(); assets?.deselect(); relations?.deselect();
+  renderMap(); draw?.render(true); save(currentId); renderGroup();
+  if((g.cards||[]).some(c=>JSON.stringify(c).includes('"board"'))) renderSidebar();
+}
+function setSelectMode(on){ selectMode=on; $('selectBtn').classList.toggle('on',on); canvas.classList.toggle('selecting',on); if(on && canvas.classList.contains('drawing')) draw?.exit(); }
+listen($('selectBtn'),'click',()=>setSelectMode(!selectMode));
+listen($('drawBtn'),'click',()=>{ if(selectMode) setSelectMode(false); clearGroup(); });
+const BUSY='.node,.card,.canvas-image,.zoombar,.nodebar,.empty-state,.draw-panel,.shape-bar,.asset-panel,.edge-label,.edge-hit,.chip,[data-relation],.rel-label,.image-handle,.hint';
+// Registered before the card, image, relation and drawing handlers so a marquee or group drag wins over them.
+listen(canvas,'pointerdown',e=>{
+  if(e.pointerType==='mouse'&&e.button!==0) return;
+  if(e.target.closest('#groupBar')){ e.stopImmediatePropagation(); return; }
+  if(e.target.closest('.group-box')&&group&&!store.readOnly){
+    e.preventDefault(); e.stopImmediatePropagation(); canvas.focus({preventScroll:true});
+    groupDrag={pointer:e.pointerId, sx:e.clientX, sy:e.clientY, lx:e.clientX, ly:e.clientY, moved:false};
+    return;
+  }
+  const drawing=canvas.classList.contains('drawing');
+  if((selectMode||e.shiftKey)&&!drawing&&!e.target.closest(BUSY)&&cur()){
+    e.preventDefault(); e.stopImmediatePropagation();
+    if(editingId) commitEdit();
+    selectedId=null; cards?.deselect(); assets?.deselect(); relations?.deselect(); group=null; renderMap();
+    canvas.focus({preventScroll:true});
+    marq={pointer:e.pointerId, sx:e.clientX, sy:e.clientY};
+    return;
+  }
+  if(group) clearGroup();
+},true);
+listen(window,'pointermove',e=>{
+  if(marq&&e.pointerId===marq.pointer){
+    const r=canvas.getBoundingClientRect(), x=Math.min(e.clientX,marq.sx)-r.left, y=Math.min(e.clientY,marq.sy)-r.top;
+    Object.assign($('marquee').style,{left:x+'px',top:y+'px',width:Math.abs(e.clientX-marq.sx)+'px',height:Math.abs(e.clientY-marq.sy)+'px'}); $('marquee').hidden=false;
+    return;
+  }
+  if(groupDrag&&e.pointerId===groupDrag.pointer){
+    if(!groupDrag.moved){ if(Math.hypot(e.clientX-groupDrag.sx,e.clientY-groupDrag.sy)<4) return; snapshot(); groupDrag.moved=true; }
+    moveGroup((e.clientX-groupDrag.lx)/view.k, (e.clientY-groupDrag.ly)/view.k); groupDrag.lx=e.clientX; groupDrag.ly=e.clientY;
+    renderMap(); draw?.render(true);
+  }
+});
+function endGroupGesture(e){
+  if(marq&&e.pointerId===marq.pointer){
+    const r=canvas.getBoundingClientRect(), m=marq; marq=null; $('marquee').hidden=true;
+    if(Math.hypot(e.clientX-m.sx,e.clientY-m.sy)<4) return;
+    const x0=(Math.min(e.clientX,m.sx)-r.left-view.x)/view.k, y0=(Math.min(e.clientY,m.sy)-r.top-view.y)/view.k;
+    selectInRect({x:x0, y:y0, w:Math.abs(e.clientX-m.sx)/view.k, h:Math.abs(e.clientY-m.sy)/view.k});
+    renderGroup();
+  }
+  if(groupDrag&&e.pointerId===groupDrag.pointer){
+    const d=groupDrag; groupDrag=null; if(!d.moved) return;
+    for(const o of pinnedObjects(cur())) if((group?.cards.has(o.id)||group?.images.has(o.id))&&L.get(o.anchor.node)){ const a=L.get(o.anchor.node); o.anchor={node:o.anchor.node, dx:o.x-a.x, dy:o.y-a.y}; }
+    save(currentId);
+  }
+}
+listen(window,'pointerup',endGroupGesture); listen(window,'pointercancel',endGroupGesture);
+listen($('groupBar'),'click',e=>{
+  const b=e.target.closest('[data-gact]'); if(!b) return;
+  if(b.dataset.gact==='delete') deleteGroup();
+  else if(b.dataset.gact==='clear') clearGroup();
+  else if(b.dataset.gact==='copy'){ canvas.focus({preventScroll:true}); document.execCommand('copy'); }
+});
+listen(document,'keydown',e=>{
+  if(!groupSize()||typingIn(e.target)) return;
+  if(e.key==='Escape'){ e.stopImmediatePropagation(); clearGroup(); }
+  else if((e.key==='Delete'||e.key==='Backspace')&&!store.readOnly){ e.preventDefault(); e.stopImmediatePropagation(); deleteGroup(); }
+  else if(e.key.startsWith('Arrow')&&!store.readOnly){
+    e.preventDefault(); e.stopImmediatePropagation();
+    const step=e.shiftKey?24:4; snapshot();
+    moveGroup(e.key==='ArrowLeft'?-step:e.key==='ArrowRight'?step:0, e.key==='ArrowUp'?-step:e.key==='ArrowDown'?step:0);
+    renderMap(); draw?.render(true); save(currentId);
+  }
+},true);
+// Ctrl+A selects everything on the board.
+listen(document,'keydown',e=>{
+  if(!(e.ctrlKey||e.metaKey)||e.key.toLowerCase()!=='a'||typingIn(e.target)||editingId||!cur()) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  selectedId=null; cards?.deselect(); assets?.deselect(); relations?.deselect();
+  selectInRect({x:-1e7, y:-1e7, w:2e7, h:2e7}); renderMap();
+},true);
 /* ---------------- side viewer ---------------- */
 // Shows a page in an embedded copy of the app; both windows stay in sync through the storage event.
 let viewing=null;
@@ -672,14 +1282,31 @@ function moreButton(label, data){
   const mb=document.createElement('button'); mb.className='icon-btn more'; mb.title='更多'; mb.setAttribute('aria-label',label); Object.assign(mb.dataset,data);
   mb.innerHTML='<i class="bi bi-three-dots" aria-hidden="true"></i>'; return mb;
 }
-function pageRow(m, folderId, depth){
-  const row=document.createElement('div'); row.className='page'+(m.id===currentId||m.id===sidebarActive?' active':'')+(folderId?' nested':''); row.dataset.id=m.id; row.tabIndex=0; row.setAttribute('role','button');
-  if(folderId){ row.dataset.folder=folderId; row.style.setProperty('--depth',depth); }
-  row.draggable=!store.readOnly;
-  const i=document.createElement('span'); i.className='pi'; i.innerHTML=stickyIcon(m.color,18);
+// A map holding independent pages shows as a folder in the sidebar, with its pages nested underneath.
+const OPEN_PAGES_KEY='yozu-open-pages';
+let openPages=new Set(); try{ openPages=new Set(JSON.parse(localStorage.getItem(OPEN_PAGES_KEY)||'[]')); }catch(e){}
+function subPagesOf(m){ const refs=boardRefs(m); return sortedMaps().filter(c=>refs.has(c.id)&&c.parentId===m.id); }
+function containsPage(m, id, seen=new Set()){ if(seen.has(m.id)) return false; seen.add(m.id); return subPagesOf(m).some(c=>c.id===id||containsPage(c,id,seen)); }
+function togglePageOpen(id){ if(openPages.has(id)) openPages.delete(id); else openPages.add(id); try{ localStorage.setItem(OPEN_PAGES_KEY,JSON.stringify([...openPages])); }catch(e){} renderSidebar(); }
+// Opening a page expands every map above it so its row is visible.
+function revealPage(id){ let changed=false; for(let m=maps.get(id), n=0; m&&isSubPage(m)&&n<50; n++){ m=maps.get(m.parentId); if(m&&!openPages.has(m.id)){ openPages.add(m.id); changed=true; } } if(changed) try{ localStorage.setItem(OPEN_PAGES_KEY,JSON.stringify([...openPages])); }catch(e){} }
+function pageRow(m, folderId, depth, out, seen=new Set()){
+  const kids=out&&!seen.has(m.id) ? subPagesOf(m) : [], open=kids.length>0&&openPages.has(m.id);
+  seen.add(m.id);
+  const hiddenCurrent=kids.length&&!open&&containsPage(m,currentId);
+  const row=document.createElement('div'); row.className='page'+(m.id===currentId||hiddenCurrent?' active':'')+(depth?' nested':'')+(isSubPage(m)?' subpage':'')+(kids.length?' has-pages':'')+(open?' open':''); row.dataset.id=m.id; row.tabIndex=0; row.setAttribute('role','button');
+  if(folderId) row.dataset.folder=folderId;
+  if(depth) row.style.setProperty('--depth',depth);
+  row.draggable=!store.readOnly&&!isSubPage(m);
+  if(kids.length){ const chev=document.createElement('i'); chev.className='bi bi-chevron-right pchev'; chev.dataset.expand=m.id; chev.title=open?'收合頁面':'展開頁面'; row.setAttribute('aria-expanded',String(open)); row.append(chev); }
+  const i=document.createElement('span'); i.className='pi'; i.innerHTML=kids.length?folderIcon(null,18):stickyIcon(m.color,18);
   const t=document.createElement('span'); t.className='pt'; t.textContent=m.title||'未命名心智圖';
   row.append(i,t);
+  if(kids.length){ const c=document.createElement('span'); c.className='fcount'; c.textContent=String(kids.length); row.append(c); }
   if(!store.readOnly) row.appendChild(moreButton('更多選項',{more:m.id}));
+  if(!out) return row;
+  out.appendChild(row);
+  if(open) for(const c of kids) pageRow(c, null, depth+1, out, seen);
   return row;
 }
 function folderRow(f, count, open, depth){
@@ -713,12 +1340,12 @@ function renderSidebar(){
     out.appendChild(folderRow(f,mapsUnder(f.id),open,depth));
     if(!open) return true;
     out.appendChild(kids);
-    list.forEach(m=>out.appendChild(pageRow(m,f.id,depth+1)));
+    list.forEach(m=>q?out.appendChild(pageRow(m,f.id,depth+1)):pageRow(m,f.id,depth+1,out));
     if(!inside.length&&!childFolders(f.id).length){ const d=document.createElement('div'); d.className='folder-empty'; d.dataset.folder=f.id; d.style.setProperty('--depth',depth+1); d.textContent='把心智圖或資料夾拖進這裡'; out.appendChild(d); }
     return true;
   }
   for(const f of childFolders(null)) if(addFolder(f,0,box)) shown++;
-  for(const m of all){ if(!known.has(m.folderId)&&match(m)){ box.appendChild(pageRow(m,null)); shown++; } }
+  for(const m of all){ if(!known.has(m.folderId)&&match(m)){ if(q) box.appendChild(pageRow(m,null,0)); else pageRow(m,null,0,box); shown++; } }
   if(!shown){
     const d=document.createElement('div'); d.className='no-pages';
     d.textContent = q ? '找不到符合的心智圖' : (ready ? '還沒有心智圖，按上方「新增心智圖」開始' : '');
@@ -737,6 +1364,7 @@ listen($('pages'), 'click', e=>{
   const fm=e.target.closest('[data-folder-more]');
   if(fm){ e.stopPropagation(); folderFor=fm.dataset.folderMore; folderAnchor=fm; showPop($('folderMenu'), fm); return; }
   if(e.target.closest('[data-rename]')) return;
+  const ex=e.target.closest('[data-expand]'); if(ex){ e.stopPropagation(); togglePageOpen(ex.dataset.expand); return; }
   const fr=e.target.closest('.folder-row'); if(fr){ toggleFolder(fr.dataset.folder); return; }
   const row=e.target.closest('.page'); if(row) goto(row.dataset.id);
 });
@@ -745,6 +1373,7 @@ listen($('pages'), 'keydown', e=>{
   if(input){ if(e.key==='Enter'){ e.preventDefault(); commitFolderName(input); } else if(e.key==='Escape'){ renamingFolder=null; renderSidebar(); } return; }
   if(e.key!=='Enter') return;
   if(e.target.classList.contains('page')) goto(e.target.dataset.id);
+  if((e.key==='ArrowRight'||e.key==='ArrowLeft')&&e.target.classList.contains('has-pages')&&e.target.classList.contains('open')!==(e.key==='ArrowRight')) togglePageOpen(e.target.dataset.id);
   else if(e.target.classList.contains('folder-row')) toggleFolder(e.target.dataset.folder);
 });
 listen($('pages'), 'focusout', e=>{ const input=e.target.closest?.('[data-rename]'); if(input) commitFolderName(input); });
@@ -819,12 +1448,16 @@ listen($('pages'), 'drop', e=>{
 });
 listen($('pages'), 'dragend', ()=>{ dragItem=null; clearDropMarks(); $('pages').querySelectorAll('.dragging').forEach(el=>el.classList.remove('dragging')); });
 
-function exportFile(all) {
+async function exportFile(all) {
   if(editingId) commitEdit();
   const selected = all ? sortedMaps() : (cur() ? pageTree(cur()) : []);
   if(!selected.length) return;
   const used=new Set(); for(const m of selected) for(let f=folderById(m.folderId), n=0; f&&n<500; f=folderById(f.parentId), n++) used.add(f.id);
-  const blob = new Blob([serializeMaps(selected, all ? folders : folders.filter(f=>used.has(f.id)))], {type:'application/json;charset=utf-8'});
+  // Attached files travel inside the export so another browser can open them.
+  const files={};
+  for(const m of selected) (function walk(list){ for(const c of list||[]){ if(c.type==='file'&&c.fileId) files[c.fileId]=null; walk(c.cards); } })(m.cards);
+  for(const id of Object.keys(files)){ const b=await getFile(id); if(b) files[id]=await blobToDataUrl(b); else delete files[id]; }
+  const blob = new Blob([serializeMaps(selected, all ? folders : folders.filter(f=>used.has(f.id)), files)], {type:'application/json;charset=utf-8'});
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   const name = all ? 'YoZuMind-全部備份' : (cur().title || '未命名心智圖');
@@ -841,9 +1474,10 @@ listen($('importFile'), 'change', async e=>{
   if(!file || store.readOnly || !ready) return;
   $('importBtn').disabled=true;
   try {
-    if(file.size > MAX_FILE_BYTES) throw new Error('存檔不可超過 25 MB。');
+    if(file.size > MAX_FILE_BYTES) throw new Error('存檔不可超過 300 MB。');
     const text = await file.text();
     const imported = parseMaps(text, uid);
+    for(const [id,url] of parseAttachments(text)){ const b=dataUrlToBlob(url); if(b) await putFile(id,b).catch(()=>{}); }
     const known = new Set(folders.map(f=>f.id)), added = parseFolders(text).filter(f=>!known.has(f.id));
     if(editingId) commitEdit();
     folders=cleanFolders([...folders, ...added]);
@@ -874,6 +1508,7 @@ function createMap(sample){
 }
 function goto(id){
   if(openAncestors(maps.get(topPageOf(id))?.folderId)) saveFolders();
+  revealPage(id);
   if(location.hash.slice(1)!==id) location.hash=id;
   openMap(id);
   if(isMobile()) app.classList.add('side-closed');
@@ -883,7 +1518,7 @@ function openMap(id){
   if(!maps.has(id)) id=null;
   const changed=id!==currentId;
   currentId=id;
-  if(changed){ for(const el of els.values()) el.remove(); els.clear(); }
+  if(changed){ for(const el of els.values()) el.remove(); els.clear(); group=null; }
   const m=cur();
   selectedId = m ? firstRootId(m) : null;
   syncHeader(); renderSidebar(); renderMap();
@@ -1132,11 +1767,11 @@ function nextZ(){ const m=cur(); let z=0; for(const o of [...(m?.images||[]),...
 function clearNodeSelection(){ if(editingId) commitEdit(); selectedId=null; for(const el of els.values()) el.classList.remove('sel'); hideBar(); }
 // Drawing goes first, then relations, so their capture-phase pointer handlers win over images and cards.
 draw=setupDraw({nextZ,canvas,world,button:$('drawBtn'),rail:$('toolrail'),getMap:cur,getView:()=>view,uid,snapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();cards?.deselect();assets?.deselect();relations?.deselect();}});
-relations=setupRelations({canvas,world,button:$('relationBtn'),getMap:cur,getView:()=>view,getBox:id=>L.get(id)||(cur()?.images||[]).find(i=>i.id===id)||cards?.box(id),uid,snapshot,dropSnapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();cards?.deselect();assets?.deselect();}});
-assets=setupCanvasAssets({nextZ,canvas,world,getMap:cur,getView:()=>view,uid,snapshot,save,toast,canEdit:()=>!store.readOnly,clearNodeSelection:()=>{clearNodeSelection();cards?.deselect();relations?.deselect();},onChange:()=>relations?.render(),hoverDrop:(x,y)=>cards?.hoverDrop(x,y),dropImage:(x,y,image)=>!!cards?.dropImage(x,y,image)});
-cards=setupCards({createPage,pageInfo,openPage:id=>goto(id),viewPage:id=>{ if(editingId) commitEdit(); openViewer(id); },renamePage,pagesChanged:()=>renderSidebar(),nextZ,canvas,world,rail:$('toolrail'),getMap:cur,getView:()=>view,uid,snapshot,dropSnapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();assets?.deselect();relations?.deselect();},hasNodeSelection:()=>!!selectedId,createTree,onChange:()=>relations?.render()});
+relations=setupRelations({canPin:r=>!!relationPin(r),pin:pinFromRelation,canvas,world,button:$('relationBtn'),getMap:cur,getView:()=>view,getBox:id=>pinHidden.has(id)?null:L.get(id)||(cur()?.images||[]).find(i=>i.id===id)||cards?.box(id),uid,snapshot,dropSnapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();cards?.deselect();assets?.deselect();}});
+assets=setupCanvasAssets({nextZ,canvas,world,getMap:cur,getView:()=>view,uid,snapshot,save,toast,canEdit:()=>!store.readOnly,clearNodeSelection:()=>{clearNodeSelection();cards?.deselect();relations?.deselect();},onChange:()=>{ relations?.render(); drawPinEdges(); },isHidden:id=>pinHidden.has(id),moved:objectMoved,pinStart,hoverDrop:(x,y)=>cards?.hoverDrop(x,y),dropImage:(x,y,image)=>!!cards?.dropImage(x,y,image)});
+cards=setupCards({createPage,pageInfo,openPage:id=>goto(id),viewPage:id=>{ if(editingId) commitEdit(); openViewer(id); },renamePage,pagesChanged:()=>renderSidebar(),nextZ,canvas,world,rail:$('toolrail'),getMap:cur,getView:()=>view,uid,snapshot,dropSnapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();assets?.deselect();relations?.deselect();},hasNodeSelection:()=>!!selectedId,createTree,isHidden:id=>pinHidden.has(id),moved:objectMoved,pinStart,hostOf:id=>hostOf(id),nodeAction,onChange:()=>{ relations?.render(); drawPinEdges(); if(!document.querySelector('.card.dragging')&&hostsResized()) renderMap(); }});
 init();
 
 // Remove everything this run drew so a hot reload or remount starts from a clean canvas.
-return () => { for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; hideBar(); ghost?.remove(); draw?.destroy(); relations?.destroy(); cards?.destroy(); assets?.destroy(); disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
+return () => { for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; edgeLabels.remove(); groupLayer.remove(); pinEdges.remove(); nodeGrip.remove(); hideBar(); ghost?.remove(); draw?.destroy(); relations?.destroy(); cards?.destroy(); assets?.destroy(); disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
 }
