@@ -37,6 +37,7 @@ function run(mode, fn) {
   }));
 }
 export const putFile = (id, blob) => run('readwrite', s => s.put(blob, id));
+export const deleteFile = id => run('readwrite', s => s.delete(id));
 export const getFile = id => run('readonly', s => s.get(id)).then(b => b || null, () => null);
 
 export function blobToDataUrl(blob) {

@@ -92,7 +92,7 @@ export function setupDraw({ canvas, world, button, rail, getMap, getView, uid, s
   let active=false, tool='pen', shapeKind='rect', fill=null, color='ink', size=1, gesture=null, lastMap=null, lastStrokes=null, cursor=null;
   const selected=new Set();
   const pointAt=(x,y)=>{ const r=canvas.getBoundingClientRect(), v=getView(); return {x:(x-r.left-v.x)/v.k, y:(y-r.top-v.y)/v.k}; };
-  const strokes=()=>getMap()?.strokes||[];
+  const strokes=()=>(getMap()?.strokes||[]).filter(stroke=>!stroke.inbox);
   function pathFor(s) {
     if(isShape(s)) return shapeFor(s);
     const p=svgEl('path',{d:strokePath(s.points), class:'ink-stroke'+(s.tool==='highlighter'?' hl':'')+(selected.has(s.id)?' sel':'')});
@@ -249,7 +249,7 @@ export function setupDraw({ canvas, world, button, rail, getMap, getView, uid, s
     else if(g.type==='move' && g.moved) save(map.id);
     else if(g.type==='lasso' && g.pts.length>2) {
       // A stroke is picked when at least half of its points fall inside the lasso.
-      for(const s of map.strokes||[]) { const pts=outline(s); if(pts.filter(([x,y])=>insidePolygon(x,y,g.pts)).length*2>=pts.length) selected.add(s.id); }
+      for(const s of strokes()) { const pts=outline(s); if(pts.filter(([x,y])=>insidePolygon(x,y,g.pts)).length*2>=pts.length) selected.add(s.id); }
     }
     render(true);
   }

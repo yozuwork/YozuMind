@@ -1,10 +1,23 @@
-import { MAX_FILE_BYTES, parseAttachments, parseFolders, parseMaps, serializeMaps } from './files.js';
-import { blobToDataUrl, dataUrlToBlob, fileKind, getFile, putFile } from './attachments.js';
-import { setupCanvasAssets } from './canvas-assets.js';
+import { parseAttachments, parseFolders, parseMaps } from './files.js';
+import { blobToDataUrl, dataUrlToBlob, fileKind, getFile, putFile, deleteFile,MAX_ATTACHMENT_BYTES } from './attachments.js';
+import { setupCanvasAssets,readImageFile,imagePlacement } from './canvas-assets.js';
+import {setupInbox} from './inbox.js';
+import {inboxEntries,markInbox,clearInbox} from './inbox-state.js';
+import {arrangeRectangles,unionRectangles} from './arrange.js';
 import { setupCards, stickyIcon, NOTE_COLORS, folderIcon, FOLDER_COLORS } from './cards.js';
 import { setupRelations } from './relations.js';
 import { setupDraw } from './draw.js';
 import { applyTheme } from './theme.js';
+import { todayDate, validDailyDate, shiftDailyDate } from './daily.js';
+import { setupGallery, exportGalleryImages, importGalleryImages, removeGalleryImages } from './gallery.js';
+import {setupGalleryPage} from './gallery-page.js';
+import { createArchive, readArchive } from './archive.js';
+import { characterStage, characterProgress,characterSourceCards,characterSourceMaps,allCards } from './character.js';
+import {setupCharactersPage} from './characters-page.js';
+import {listStagePresets,importStagePresets,removeStagePresets} from './stage-presets.js';
+import {setupNotesPage} from './notes-page.js';
+import {listNotes,cachedNote,importNotes,removeNotes,remapNoteLinks} from './notes.js';
+import {DEFAULT_WORKSPACE,WORKSPACES_KEY,activeWorkspaceId,workspaceOf,inWorkspace,uniqueWorkspaceName,validateWorkspaces,readWorkspaceState,persistWorkspaceState,archiveWorkspaces,selectArchiveWorkspace,setupWorkspaceMenu,chooseExportWorkspace,chooseImportWorkspace} from './workspaces.js';
 
 export function initializeMindMap() {
 const disposers = [];
@@ -16,6 +29,8 @@ const PALETTE = ['#a414b8','#1767c9','#008a77','#c9821a','#d0336f','#3f8f35'];
 const LS_KEY = 'yozu-mindmap-v1';
 const FOLDER_KEY = 'yozu-folders-v1', FOLDER_DOC = '__folders';
 const uid = (p) => (p||'n') + '-' + Math.random().toString(36).slice(2,10);
+let workspaces=readWorkspaceState().workspaces;
+const lastWorkspaceMap=new Map();
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 const isMobile = () => window.matchMedia('(max-width:760px)').matches;
 
@@ -29,6 +44,8 @@ const nodebar=$('nodebar');
 
 const store = { mode:'loading', db:null, readOnly:false };
 const maps = new Map();
+let selectedDailyDate=todayDate();
+let lastRegularId=null;
 let folders = [];
 let currentId=null, selectedId=null, editingId=null, editOrig='', editFresh=false;
 let view={x:0,y:0,k:1};
@@ -37,7 +54,26 @@ const els=new Map();
 const undoS=new Map(), redoS=new Map();
 const mcache=new Map();
 let ready=false;
-let assets=null, cards=null, relations=null, draw=null;
+let assets=null, cards=null, relations=null, draw=null, gallery=null, characterHub=null, galleryPage=null,notesHub=null,inboxHub=null;
+
+function ensureKnownWorkspaces() {
+  const known=new Set(workspaces.map(item=>item.id));
+  if(!known.has(DEFAULT_WORKSPACE)){workspaces.unshift({id:DEFAULT_WORKSPACE,name:'我的工作區',createdAt:0});known.add(DEFAULT_WORKSPACE);}
+  for(const item of [...maps.values(),...folders]) {const id=workspaceOf(item);if(!known.has(id)){workspaces.push({id,name:'未命名工作區',createdAt:Date.now()});known.add(id);}}
+  try {workspaces=persistWorkspaceState(workspaces,known.has(activeWorkspaceId())?activeWorkspaceId():DEFAULT_WORKSPACE);}catch{toast('工作區設定暫存失敗，請匯出備份。');}
+}
+function switchWorkspace(id) {
+  if(!workspaces.some(item=>item.id===id)) throw new Error('找不到這個工作區。');
+  if(id===activeWorkspaceId()) return;
+  if(editingId)commitEdit();cards?.commit();
+  if(currentId)lastWorkspaceMap.set(activeWorkspaceId(),currentId);
+  const showCharacters=characterHub?.isOpen(),showGallery=galleryPage?.isOpen(),showNotes=notesHub?.isOpen();characterHub?.hide();galleryPage?.hide();notesHub?.hide();
+  workspaces=persistWorkspaceState(workspaces,id);
+  currentId=null;selectedId=null;lastRegularId=null;renamingFolder=null;selectedDailyDate=todayDate();$('search').value='';closePops();closeViewer();
+  const remembered=lastWorkspaceMap.get(id),target=maps.has(remembered)&&workspaceOf(maps.get(remembered))===id?remembered:firstRegularMap()?.id||sortedMaps()[0]?.id||null;
+  history.replaceState(null,'',location.pathname+location.search+(target?'#'+target:''));
+  openMap(target);setStatus();characterHub?.refresh();if(showCharacters)characterHub.show();else if(showGallery)galleryPage.show();else if(showNotes)notesHub.show();
+}
 
 /* ---------------- persistence ---------------- */
 function lsLoad(){ try{ const a=JSON.parse(localStorage.getItem(LS_KEY)||'[]'); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
@@ -55,25 +91,27 @@ function lsSaveAll(){
 
 // Folders may nest via parentId; missing parents and cycles fall back to the top level.
 function cleanFolders(list){
-  const out=(Array.isArray(list)?list:[]).filter(f=>f&&typeof f.id==='string'&&typeof f.name==='string').map(f=>({id:f.id,name:f.name,open:f.open!==false,createdAt:+f.createdAt||0,
+  const out=(Array.isArray(list)?list:[]).filter(f=>f&&typeof f.id==='string'&&typeof f.name==='string').map(f=>({id:f.id,name:f.name,open:f.open!==false,createdAt:+f.createdAt||0,workspaceId:workspaceOf(f),
     ...(typeof f.parentId==='string'?{parentId:f.parentId}:{}), ...(FOLDER_COLORS[f.color]?{color:f.color}:{})}));
   const byId=new Map(out.map(f=>[f.id,f]));
-  for(const f of out){ const seen=new Set([f.id]); for(let p=f.parentId; p; p=byId.get(p).parentId){ if(!byId.has(p)||seen.has(p)){ delete f.parentId; break; } seen.add(p); } }
+  for(const f of out){ const seen=new Set([f.id]); for(let p=f.parentId; p; p=byId.get(p).parentId){ if(!byId.has(p)||workspaceOf(byId.get(p))!==workspaceOf(f)||seen.has(p)){ delete f.parentId; break; } seen.add(p); } }
   return out;
 }
 async function saveFolders(){
   if(store.readOnly) return;
-  if(store.mode==='cloud'){ try{ await store.db.doc('maps/'+FOLDER_DOC).set({folders:JSON.parse(JSON.stringify(folders))}); }catch(e){ writeError(e); } return; }
-  try{ localStorage.setItem(FOLDER_KEY, JSON.stringify(folders)); }catch(e){ toast('瀏覽器暫存失敗，請立即匯出存檔，避免關閉後遺失。'); }
+  if(store.mode==='cloud'){ try{ await store.db.doc('maps/'+FOLDER_DOC).set({folders:JSON.parse(JSON.stringify(folders)),workspaces});return true; }catch(e){ writeError(e);return false; } }
+  try{ localStorage.setItem(FOLDER_KEY, JSON.stringify(folders));return true; }catch(e){ toast('瀏覽器暫存失敗，請立即匯出存檔，避免關閉後遺失。');return false; }
 }
 
 const pending=new Map(), inflight=new Set(), again=new Set(), myRevs=new Set(), retried=new Set();
 function isBusy(id){ return pending.has(id)||inflight.has(id); }
 function save(id, immediate){
+  inboxHub?.render();
+  characterHub?.render();
   if(store.readOnly) return;
   const m=maps.get(id); if(!m) return;
   m.updatedAt=Date.now();
-  if(store.mode!=='cloud'){ lsSaveAll(); return; }
+  if(store.mode!=='cloud')return lsSaveAll();
   clearTimeout(pending.get(id));
   pending.set(id, setTimeout(()=>flush(id), immediate?0:500));
   setStatus();
@@ -120,23 +158,25 @@ function setStatus(){
 }
 
 /* ---------------- data helpers ---------------- */
-function cur(){ return currentId ? maps.get(currentId) : null; }
+function cur(){ const map=currentId?maps.get(currentId):null;return map&&workspaceOf(map)===activeWorkspaceId()?map:null; }
 function mkNode(text,color){ const n={id:uid('n'),text:text||'',children:[]}; if(color) n.color=color; return n; }
 function makeMap(sample){
   const root = sample
     ? Object.assign(mkNode('YoZuLife'),{children:[mkNode('LIFE生活區',PALETTE[0]),mkNode('英雄習慣區',PALETTE[1]),mkNode('其他YoZU頁面',PALETTE[2])]})
     : mkNode('中心主題');
   const now=Date.now();
-  return { id:uid('m'), title: sample?'YoZuLife':'未命名心智圖', layout:'down', root, createdAt:now, updatedAt:now, rev:'' };
+  return { id:uid('m'), workspaceId:activeWorkspaceId(), title: sample?'YoZuLife':'未命名心智圖', layout:'down', root, createdAt:now, updatedAt:now, rev:'' };
 }
 // The main tree sits at (rootX, rootY); extra trees live in m.trees with their own position.
 // m.root is null once every mind map on the board has been deleted.
-function treesOf(m){ return [...(m.root?[{main:true, root:m.root, x:m.rootX||0, y:m.rootY||0}]:[]), ...(m.trees||[])]; }
+function treesOf(m){ return [...(m.root?[{main:true, root:m.root, x:m.rootX||0, y:m.rootY||0}]:[]), ...(m.trees||[]).filter(tree=>!tree.inbox)]; }
+function takeVisibleTree(m){const index=(m.trees||[]).findIndex(tree=>!tree.inbox);return index<0?null:m.trees.splice(index,1)[0];}
 function firstRootId(m){ return treesOf(m)[0]?.root.id||null; }
 function setTreePos(tree,x,y){ if(tree.main){ const m=cur(); m.rootX=x; m.rootY=y; } else { tree.x=x; tree.y=y; } }
 function sanitizeMap(m){
+  m.workspaceId=workspaceOf(m);
   m.root=m.root?sanitize(m.root):null;
-  m.trees=Array.isArray(m.trees) ? m.trees.filter(t=>t&&t.root).map(t=>({id:t.id||uid('t'), x:+t.x||0, y:+t.y||0, root:sanitize(t.root)})) : [];
+  m.trees=Array.isArray(m.trees) ? m.trees.filter(t=>t&&t.root).map(t=>({id:t.id||uid('t'), x:+t.x||0, y:+t.y||0, root:sanitize(t.root),...(t.inbox?{inbox:true,inboxId:t.inboxId||t.id,inboxLabel:t.inboxLabel||'',inboxAt:t.inboxAt||0}:{})})) : [];
   return m;
 }
 function createTree(at){
@@ -191,17 +231,19 @@ function nextColor(root){
 function isAncestor(aId, bId){ let i=idx.get(bId); while(i&&i.parent){ if(i.parent.id===aId) return true; i=idx.get(i.parent.id); } return false; }
 
 /* ---------------- undo ---------------- */
-function capture(m){ return JSON.stringify({root:m.root,trees:m.trees||[],rootX:m.rootX||0,rootY:m.rootY||0,images:m.images||[],relations:m.relations||[],cards:m.cards||[],strokes:m.strokes||[]}); }
-function snapshot(){ const m=cur(); if(!m) return; const s=undoS.get(m.id)||[]; s.push(capture(m)); if(s.length>80) s.shift(); undoS.set(m.id,s); redoS.set(m.id,[]); }
+function capture(m,withView=false){ return JSON.stringify({root:m.root,trees:m.trees||[],rootX:m.rootX||0,rootY:m.rootY||0,images:m.images||[],relations:m.relations||[],cards:m.cards||[],strokes:m.strokes||[],...(withView?{__view:{...view}}:{})}); }
+function snapshot(mapId,withView=false){ const m=mapId?maps.get(mapId):cur(); if(!m) return; const s=undoS.get(m.id)||[]; s.push(capture(m,withView)); if(s.length>80) s.shift(); undoS.set(m.id,s); redoS.set(m.id,[]); }
 function dropSnapshot(){ const m=cur(); if(!m) return; const s=undoS.get(m.id); if(s) s.pop(); }
 function doUndo(){ step(undoS, redoS); }
 function doRedo(){ step(redoS, undoS); }
 function step(from,to){
   if(store.readOnly) return; const m=cur(); if(!m) return;
   const s=from.get(m.id); if(!s||!s.length) return;
-  const t=to.get(m.id)||[]; t.push(capture(m)); to.set(m.id,t);
-  Object.assign(m,JSON.parse(s.pop()));
+  const restored=JSON.parse(s.pop()),restoredView=restored.__view;delete restored.__view;
+  const t=to.get(m.id)||[]; t.push(capture(m,!!restoredView)); to.set(m.id,t);
+  Object.assign(m,restored);
   renderMap(); if(!idx.has(selectedId)) { selectedId=firstRootId(m); renderMap(); }
+  if(restoredView){Object.assign(view,restoredView);applyView();placeBar();}
   renderSidebar();
   save(m.id);
 }
@@ -252,6 +294,7 @@ function doLayout(){
 
 /* ---------------- render ---------------- */
 function renderMap(){
+  inboxHub?.render();
   const m=cur();
   updateEmpty();
   if(!m){ for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; hideBar(); cards?.render(); assets?.render(); relations?.render(); draw?.render(); return; }
@@ -288,6 +331,7 @@ function renderMap(){
 // While a note card or a note-style node is selected, the left rail turns into that note's tools (Milanote style).
 function ctxTarget(){
   if(groupSize()) return null;
+  const character=cards?.characterMenu(); if(character) return {kind:'character',card:character};
   const c=cards?.focused(); if(c&&c.type==='note') return {kind:'card', card:c};
   const info=selectedId&&idx.get(selectedId); if(info&&info.node.note&&info.parent) return {kind:'node', id:selectedId, node:info.node};
   return null;
@@ -295,11 +339,41 @@ function ctxTarget(){
 function syncCtxRail(){
   const t=store.readOnly?null:ctxTarget(), rail=$('ctxRail');
   rail.hidden=!t; if(!t) return;
+  rail.setAttribute('aria-label',t.kind==='character'?'角色卡工具':'筆記工具');
   const show=(k,on)=>{ const b=rail.querySelector(`[data-ctx="${k}"]`); if(b) b.hidden=!on; };
-  ['smaller','bigger','todo','code'].forEach(k=>show(k,t.kind==='card'));
+  const character=t.kind==='character';
+  show('notes',t.kind!=='node');
+  ['title','color'].forEach(k=>show(k,!character));
+  ['stages','rename','image','links'].forEach(k=>show(k,character));
+  show('removeImage',character&&!!cards.characterPortrait());
+  const info=$('characterRailInfo'); info.hidden=!character;
+  if(character) {
+    const image=rail.querySelector('[data-ctx="image"]'); image.title=cards.characterPortrait()?'更換圖片':'加入圖片'; image.querySelector('.rail-label').textContent=image.title;
+    const names=allCharacterTodoNames(t.card);
+    const progress=characterProgress(t.card,characterSourceCards(t.card,cur(),inWorkspace([...maps.values()])));
+    info.textContent=`每項待辦 10 XP · 目前每 ${progress.required} XP 升一級\n${names.length?'連動：'+names.join('、'):'尚未連動待辦清單'}`;
+  }
+  ['smaller','bigger','todo','code'].forEach(k=>show(k,t.kind==='card'&&!t.card.linkedOnly));
+  show('title',!character&&!t.card?.linkedOnly);
+  if(character) return;
   const titled=t.kind==='card' ? !!t.card.title : noteTitled(t.node);
   const tb=rail.querySelector('[data-ctx="title"]'); tb.classList.toggle('on',titled); tb.title=titled?'移除標題':'加入標題';
   rail.querySelector('[data-ctx="title"] .rail-label').textContent=titled?'移除標題':'標題';
+}
+function allCharacterTodoNames(card) {
+  const names=[];
+  function walk(list=[]) { for(const c of list) { if(c.type==='todo' && (card.todoIds||[]).includes(c.id)) names.push(c.title||c.items?.find(i=>i.text)?.text||'未命名清單'); if(c.cards) walk(c.cards); } }
+  walk(characterSourceCards(card,cur(),inWorkspace([...maps.values()]))); return names;
+}
+function locateTodoCard(mapId,cardId){
+  const map=maps.get(mapId);if(!map||workspaceOf(map)!==activeWorkspaceId())return toast('找不到這張心智圖，可能已移除或移到其他工作區。');
+  function pathTo(list,path=[]){for(const card of list||[]){const next=[...path,card];if(card.id===cardId&&card.type==='todo')return next;const found=pathTo(card.cards,next);if(found)return found;}return null;}
+  const path=pathTo(map.cards);if(!path)return toast('這份待辦清單已移除，請重新選擇連動清單。');
+  goto(mapId);
+  for(const card of path){for(let node=idx.get(card.anchor?.node)?.node;node;node=idx.get(node.id)?.parent)node.collapsed=false;}
+  renderMap();const box=cards.focusCard(cardId);if(!box)return toast('清單暫時無法顯示，請展開所在的欄位後重試。');
+  view.x=canvas.clientWidth/2-(box.x+box.w/2)*view.k;view.y=canvas.clientHeight/2-(box.y+box.h/2)*view.k;applyView();
+  const target=world.querySelector(`.card[data-id="${CSS.escape(cardId)}"]`);if(target){target.classList.add('card-located');target.tabIndex=-1;target.focus({preventScroll:true});}
 }
 function toggleNodeTitle(id){
   const info=idx.get(id); if(!info||!guard()) return; const n=info.node;
@@ -316,7 +390,9 @@ listen($('ctxRail'),'click',e=>{
   const b=e.target.closest('[data-ctx]'), t=ctxTarget(); if(!b) return;
   const k=b.dataset.ctx;
   if(k==='back'||!t){ clearNodeSelection(); cards?.deselect(); syncCtxRail(); return; }
-  if(t.kind==='card'){
+  if(k==='notes'&&t.card){const map=cur(),id=t.card.id;notesHub.pick(t.card.noteIds||[]).then(ids=>{if(ids&&cur()===map)cards.setNoteLinks(id,ids);}).catch(error=>toast(error.message||'無法開啟關聯筆記'));return;}
+  if(t.kind==='character') cards.characterAction(k);
+  else if(t.kind==='card'){
     if(k==='title') cards.toggleTitle(t.card.id);
     else cards.act(t.card.id, {color:'color',smaller:'fsDown',bigger:'fsUp',todo:'todo',code:'code',delete:'delete'}[k]);
   } else {
@@ -398,14 +474,17 @@ function drawEdges(){
 }
 function applyView(){
   world.style.transform=`translate(${view.x}px,${view.y}px) scale(${view.k})`;
-  const g=24*view.k;
+  const g=12*view.k;
   canvas.style.backgroundSize=`${g}px ${g}px`;
   canvas.style.backgroundPosition=`${view.x}px ${view.y}px`;
   $('zLabel').textContent=Math.round(view.k*100)+'%';
+  $('zRange').value=String(Math.round(view.k*100));
+  $('zRange').setAttribute('aria-valuetext',Math.round(view.k*100)+'%');
   relations?.place(); draw?.place(); placeGroupBar();
 }
 function bbox(){ let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity; for(const o of [...L.values(),...(assets?.boxes()||[]),...(cards?.boxes()||[]),...(draw?.boxes()||[])]){ a=Math.min(a,o.x); b=Math.min(b,o.y); c=Math.max(c,o.x+o.w); d=Math.max(d,o.y+o.h);} return {x0:a,y0:b,x1:c,y1:d}; }
 function fit(){
+  if(!canvas.clientWidth||!canvas.clientHeight)return;
   const bb=bbox(); if(!Number.isFinite(bb.x0)) return; const cw=canvas.clientWidth, ch=canvas.clientHeight; const pad=isMobile()?32:90;
   const k=clamp(Math.min((cw-pad*2)/Math.max(1,bb.x1-bb.x0),(ch-pad*2)/Math.max(1,bb.y1-bb.y0)), .25, 1);
   view.k=k; view.x=cw/2-(bb.x0+bb.x1)/2*k; view.y=ch/2-(bb.y0+bb.y1)/2*k; applyView(); placeBar();
@@ -501,7 +580,7 @@ function deleteSel(){
     const m=cur(), removed=new Set();
     (function collect(node){removed.add(node.id);node.children.forEach(collect);})(info.node);
     m.relations=(m.relations||[]).filter(line=>!removed.has(line.from)&&!removed.has(line.to));
-    if(info.tree.main){ const next=(m.trees||[]).shift(); m.root=next?next.root:null; m.rootX=next?next.x:0; m.rootY=next?next.y:0; }
+    if(info.tree.main){ const next=takeVisibleTree(m); m.root=next?next.root:null; m.rootX=next?next.x:0; m.rootY=next?next.y:0; }
     else m.trees=m.trees.filter(t=>t!==info.tree);
     selectedId=null; renderMap(); save(currentId); renderSidebar();
     if(!m.root) toast('已刪除心智圖，可用左側「心智圖」工具再新增');
@@ -793,7 +872,7 @@ listen(document, 'keydown', e=>{
 });
 
 /* ---------------- sidebar ---------------- */
-function sortedMaps(){ return [...maps.values()].sort((a,b)=>(a.createdAt||0)-(b.createdAt||0)); }
+function sortedMaps(){ return inWorkspace([...maps.values()]).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0)); }
 /* ---------------- independent pages ---------------- */
 // A page is a map opened from a board card; it stays out of the sidebar while its parent still holds that card.
 // Pages are referenced by board cards and by mind-map nodes that open into their own page.
@@ -853,10 +932,20 @@ listen(document,'copy',e=>onCopy(e,false));
 listen(document,'cut',e=>onCopy(e,true));
 // Fresh ids everywhere, keeping each id's prefix (c-, n-, i-, img-, s-).
 function reId(value){
-  if(Array.isArray(value)) return value.map(reId);
-  if(!value||typeof value!=='object') return value;
-  const out={}; for(const [k,v] of Object.entries(value)) out[k]=k==='id'&&typeof v==='string' ? uid(v.split('-')[0]) : reId(v);
-  return out;
+  const ids=new Map();
+  function copy(v) {
+    if(Array.isArray(v)) return v.map(copy);
+    if(!v||typeof v!=='object') return v;
+    const out={};
+    for(const [k,item] of Object.entries(v)) {
+      if(k==='id' && typeof item==='string') { const id=uid(item.split('-')[0]); ids.set(item,id); out[k]=id; }
+      else out[k]=copy(item);
+    }
+    return out;
+  }
+  const result=copy(value);
+  function links(v) { if(!v||typeof v!=='object') return; if(v.type==='character') v.todoIds=(v.todoIds||[]).map(id=>ids.get(id)||id); Object.values(v).forEach(links); }
+  links(result); return result;
 }
 // A pasted page link takes the page along: an orphaned page (left by a cut) moves here, a page still in use is duplicated.
 function adoptPages(items){
@@ -889,14 +978,75 @@ function pastePoint(){
   const sx=lastPointer?lastPointer.x-r.left:canvas.clientWidth/2, sy=lastPointer?lastPointer.y-r.top:canvas.clientHeight/2;
   return {x:(sx-view.x)/view.k+off, y:(sy-view.y)/view.k+off};
 }
+function stageClipboard(kind,items,label='',map=cur()){
+  if(!map||store.readOnly)return false;
+  const data={cards:[],images:[],trees:[],strokes:[]};
+  if(kind==='card')data.cards=items;
+  else if(kind==='image')data.images=items;
+  else if(kind==='node')data.trees=items.map(root=>({id:uid('t'),x:0,y:0,root:sanitize(root)}));
+  else if(kind==='strokes')data.strokes=items;
+  else if(kind==='group')Object.assign(data,items[0]);
+  else return false;
+  if((map.images?.length||0)+data.images.length>100||(map.cards?.length||0)+data.cards.length>2000||(map.trees?.length||0)+data.trees.length>100||(map.strokes?.length||0)+data.strokes.length>5000){toast('這張心智圖的物件數量已達上限，請改放其他心智圖。');return false;}
+  const objects=[...data.cards,...data.images,...data.trees,...data.strokes];if(!objects.length)return false;
+  for(const value of [...data.cards,...data.images,...data.trees]){value.x=Number.isFinite(value.x)?value.x:0;value.y=Number.isFinite(value.y)?value.y:0;if(value.root&&!value.id)value.id=uid('t');delete value.anchor;}
+  const pastedCards=allCards(data.cards),pastedTodos=new Set(pastedCards.filter(card=>card.type==='todo').map(card=>card.id));
+  for(const card of pastedCards){if(card.type!=='character'||!card.todoIds?.length)continue;const sources=new Set((card.todoMapIds||[]).filter(id=>maps.has(id)&&workspaceOf(maps.get(id))===workspaceOf(map)));if(card.todoIds.some(id=>pastedTodos.has(id)))sources.add(map.id);if(!card.todoMapIds)for(const source of inWorkspace([...maps.values()],workspaceOf(map)))if(allCards(source.cards).some(todo=>todo.type==='todo'&&card.todoIds.includes(todo.id)))sources.add(source.id);if(sources.size)card.todoMapIds=[...sources];}
+  snapshot(map.id);markInbox(objects,uid('inbox'),String(label||''));
+  for(const key of ['cards','images','trees','strokes'])(map[key]||=[]).push(...data[key]);
+  const persisted=save(map.id);if(cur()?.id===map.id){renderMap();inboxHub?.show();}
+  toast(persisted===false?'已放入暫存區，但瀏覽器儲存失敗，請立即匯出存檔。':`已加入「${map.title||'未命名心智圖'}」暫存區，可預覽後拖到畫布。`);return true;
+}
+async function stageClipboardImages(files,target){
+  const origin=cur();if(!origin||store.readOnly)return toast('請先開啟可編輯的心智圖。');
+  const targetId=cards.pasteTarget('image',target)?.id;
+  for(const file of files){try{
+    const {src,width,height}=await readImageFile(file),map=maps.get(origin.id);if(!map||store.readOnly)return;
+    const container=cur()?.id===map.id&&targetId&&allCards(map.cards).find(card=>card.id===targetId);
+    if(container){cards.paste({id:uid('c'),type:'image',src},pastePoint(),container.id);continue;}
+    stageClipboard('image',[{id:uid('img'),src,x:0,y:0,w:width,h:height}],file.name||'貼上的圖片',map);
+  }catch(error){toast(error.message||'圖片讀取失敗，請重試。');}}
+}
+async function stageClipboardFiles(files,target){
+  const origin=cur();if(!origin||store.readOnly)return;
+  const container=cards.pasteTarget('file',target);if(container){cards.addFiles(files,pastePoint(),container.id);return;}
+  for(const file of files){const kind=fileKind(file);if(!kind)continue;if(file.size>MAX_ATTACHMENT_BYTES){toast(`「${file.name}」超過 50 MB`);continue;}const fileId=uid('f');try{await putFile(fileId,file);const map=maps.get(origin.id);if(!map||store.readOnly){await deleteFile(fileId);continue;}if(!stageClipboard('card',[{id:uid('c'),type:'file',fileId,kind,name:file.name,size:file.size,x:0,y:0}],file.name,map))await deleteFile(fileId);}catch(error){toast(error.message||'文件儲存失敗，請重試。');}}
+}
+function removeInboxEntry(id){
+  const map=cur(),entry=inboxEntries(map).find(item=>item.id===id);if(!entry||store.readOnly)return;
+  snapshot();const values=new Set(entry.objects.map(item=>item.value)),ids=new Set();const collect=value=>{if(value.id)ids.add(value.id);for(const child of value.cards||value.children||[])collect(child);if(value.root)collect(value.root);};values.forEach(collect);
+  for(const key of ['cards','images','trees','strokes'])map[key]=(map[key]||[]).filter(value=>!values.has(value));map.relations=(map.relations||[]).filter(link=>!ids.has(link.from)&&!ids.has(link.to));save(map.id);renderMap();
+}
+function placeInboxEntry(id,at,event){
+  const map=cur(),entry=inboxEntries(map).find(item=>item.id===id);if(!entry||store.readOnly)return false;
+  if(editingId)commitEdit();cards?.commit();snapshot();
+  if(entry.objects.length===1){const {kind,value}=entry.objects[0];
+    if(kind==='image'){
+      const placed=event&&cards.dropImage(event.clientX,event.clientY,value);map.images=map.images.filter(image=>image!==value);clearInbox(value);
+      if(!placed){const size=imagePlacement(value.w,value.h,canvas.clientWidth,canvas.clientHeight,view);Object.assign(value,{w:size.w,h:size.h});assets.paste(value,at,false);}save(map.id);renderMap();toast('圖片已放到畫布。');return true;
+    }
+    if(kind==='card'){
+      const target=event?.target.closest?.('.card')?cards.pasteTarget(value.type,event.target):null;map.cards=map.cards.filter(card=>card!==value);clearInbox(value);cards.paste(value,{x:at.x-(value.w||240)/2,y:at.y-40},target?.id||null,false);renderMap();toast('已放到畫布。');return true;
+    }
+  }
+  const bounds=entry.objects.map(({kind,value})=>kind==='stroke'?value.points.reduce((box,[x,y])=>({x:Math.min(box.x,x),y:Math.min(box.y,y),right:Math.max(box.right,x),bottom:Math.max(box.bottom,y)}),{x:Infinity,y:Infinity,right:-Infinity,bottom:-Infinity}):{x:value.x||0,y:value.y||0,right:(value.x||0)+(value.w||200),bottom:(value.y||0)+(value.h||100)});
+  const dx=at.x-(Math.min(...bounds.map(box=>box.x))+Math.max(...bounds.map(box=>box.right)))/2,dy=at.y-(Math.min(...bounds.map(box=>box.y))+Math.max(...bounds.map(box=>box.bottom)))/2;
+  for(const {kind,value} of entry.objects){clearInbox(value);if(kind==='stroke')value.points=value.points.map(([x,y])=>[x+dx,y+dy]);else {value.x=(value.x||0)+dx;value.y=(value.y||0)+dy;}value.z=nextZ();}
+  clearNodeSelection();cards.deselect();assets.deselect();relations.deselect();renderMap();draw.render(true);save(map.id);toast('已放到畫布。');return true;
+}
 listen(document,'paste',e=>{
   if(typingIn(e.target)) return;
   const docs=[...(e.clipboardData?.files||[])].filter(fileKind);
-  if(docs.length){ e.preventDefault(); e.stopImmediatePropagation(); cards?.addFiles(docs, pastePoint()); return; }
+  if(docs.length){ e.preventDefault(); e.stopImmediatePropagation(); stageClipboardFiles(docs,e.target); return; }
   let data=null;
   try{ const raw=e.clipboardData?.getData(CLIP_TYPE); if(raw) data=JSON.parse(raw); }catch(err){}
   if(!data && clip && e.clipboardData?.getData('text/plain')===clip.text && !e.clipboardData?.files?.length) data=clip;
-  if(!data || !Array.isArray(data.items) || !data.items.length) return;
+  if(!data || !Array.isArray(data.items) || !data.items.length){
+    if([...(e.clipboardData?.files||[]),...(e.clipboardData?.items||[])].some(item=>item.type?.startsWith('image/')))return;
+    const text=e.clipboardData?.getData('text/plain');if(!text?.trim())return;e.preventDefault();e.stopImmediatePropagation();if(!cur()||store.readOnly)return toast('請先開啟可編輯的心智圖。');if(text.length>10000)return toast('單次貼上的文字請少於 10,000 字。');
+    const focused=e.target.closest?.('.inbox-panel')?null:cards.focused();if(focused&&['note','todo'].includes(focused.type)){if((focused.text?.length||0)+text.length>10000||focused.type==='todo'&&(focused.items.length+text.split('\n').length>500||text.split('\n').some(line=>line.length>1000)))return toast('貼上內容超過此卡片的文字或項目上限。');cards.appendText(text,focused);return;}
+    const card=text.trim().length<=2000&&/^https?:\/\/\S+$/i.test(text.trim())?{id:uid('c'),type:'link',title:'',url:text.trim(),x:0,y:0}:{id:uid('c'),type:'note',text,x:0,y:0},target=cards.pasteTarget(card.type,e.target);if(target)cards.paste(card,pastePoint(),target.id);else stageClipboard('card',[card],text.split('\n')[0]);return;
+  }
   e.preventDefault(); e.stopImmediatePropagation();
   const m=cur(); if(!m){ toast('請先建立或開啟一張心智圖'); return; }
   if(store.readOnly){ toast('你目前只有檢視權限'); return; }
@@ -904,9 +1054,11 @@ listen(document,'paste',e=>{
   const items=reId(data.items), at=pastePoint();
   (function unpin(v){ if(Array.isArray(v)) return v.forEach(unpin); if(v&&typeof v==='object'){ delete v.anchor; Object.values(v).forEach(unpin); } })(items);
   adoptPages(items);
+  const target=data.kind==='card'?cards.pasteTarget(items[0].type,e.target):data.kind==='image'?cards.pasteTarget('image',e.target):null;
+  if(!target&&!(data.kind==='node'&&selectedId&&!e.target.closest?.('.inbox-panel'))){stageClipboard(data.kind,items,data.label||data.text||'貼上的內容');return;}
   if(data.kind==='group') pasteGroup(items[0], at);
-  else if(data.kind==='card') cards.paste(items[0], at);
-  else if(data.kind==='image') assets.paste(items[0], at);
+  else if(data.kind==='card') cards.paste(items[0], at,target.id);
+  else if(data.kind==='image') { if(!cards.receiveImage(items[0],e.target))cards.paste({id:uid('c'),type:'image',src:items[0].src},at,target.id); }
   else if(data.kind==='strokes'){ if(!draw) return; draw.paste(items, at); }
   else if(data.kind==='node'){
     const node=sanitize(items[0]), parent=selectedId&&idx.get(selectedId);
@@ -927,7 +1079,7 @@ listen(canvas,'drop',e=>{
   const box=document.elementFromPoint(e.clientX,e.clientY)?.closest('.card-column,.card-folder');
   const docs=files.filter(fileKind), images=files.filter(f=>f.type.startsWith('image/'));
   if(docs.length) cards?.addFiles(docs, at, box?.dataset.id||null);
-  if(images.length) assets?.addFiles(images);
+  if(images.length && !(e.target.closest('.card-todo,.card-character') && cards?.receiveImages(images,e.target))) assets?.addFiles(images);
   if(!docs.length && !images.length) toast('只支援 PDF、Word、Excel 檔案與圖片');
 });
 listen($('attachBtn'),'click',()=>{ $('attachFile').value=''; $('attachFile').click(); });
@@ -936,7 +1088,7 @@ listen($('attachFile'),'change',()=>{ const files=[...$('attachFile').files]; if
 // A top-level card or canvas image can hang from a node (anchor: {node, dx, dy} relative to the node's box):
 // it follows the node when the layout moves and hides while any ancestor is collapsed.
 let pinHidden=new Set();
-const pinnedObjects=m=>[...(m?.cards||[]), ...(m?.images||[])].filter(o=>o.anchor);
+const pinnedObjects=m=>[...(m?.cards||[]), ...(m?.images||[])].filter(o=>o.anchor&&!o.inbox);
 function syncPins(){
   pinHidden=new Set(); const m=cur(); if(!m) return;
   for(const o of pinnedObjects(m)){
@@ -1046,11 +1198,39 @@ let selectMode=false, group=null, marq=null, groupDrag=null;
 const groupSize=()=>group ? group.cards.size+group.images.size+group.strokes.size+group.trees.size : 0;
 function treeOfRoot(m, rootId){ return treesOf(m).find(t=>t.root.id===rootId); }
 function treeBox(t){ let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity; (function walk(n){ const o=L.get(n.id); if(o){ a=Math.min(a,o.x); b=Math.min(b,o.y); c=Math.max(c,o.x+o.w); d=Math.max(d,o.y+o.h); } if(!n.collapsed) n.children.forEach(walk); })(t.root); return Number.isFinite(a)?{x:a,y:b,w:c-a,h:d-b}:null; }
+async function arrangeCanvas(){
+  if(!ready||store.readOnly||!cur())return;
+  const requested=cur().id,button=$('arrangeBtn');if(button.disabled)return;button.disabled=true;button.setAttribute('aria-busy','true');
+  try{
+    await Promise.allSettled([...world.querySelectorAll('img')].map(image=>image.decode()));
+    const map=cur();if(map?.id!==requested||store.readOnly)return;
+    if(editingId)commitEdit();cards.commit();draw.exit();clearGroup();renderMap();
+    const units=[],cardBoxes=new Map(cards.boxes().map(box=>[box.id,box]));
+    for(const tree of treesOf(map)){
+      const boxes=[treeBox(tree)].filter(Boolean);
+      for(const object of pinnedObjects(map)){if(idx.get(object.anchor.node)?.tree.root.id!==tree.root.id||pinHidden.has(object.id))continue;const box=map.images?.includes(object)?object:cardBoxes.get(object.id);if(box)boxes.push(box);}
+      const bounds=unionRectangles(boxes);if(bounds)units.push({id:tree.root.id,...bounds,move:(dx,dy)=>setTreePos(tree,tree.x+dx,tree.y+dy)});
+    }
+    for(const card of map.cards||[]){if(card.inbox||card.anchor)continue;const box=cardBoxes.get(card.id);if(box)units.push({id:card.id,x:card.x,y:card.y,w:box.w,h:box.h,move:(dx,dy)=>{card.x=Math.round(card.x+dx);card.y=Math.round(card.y+dy);}});}
+    for(const image of map.images||[]){if(image.inbox||image.anchor)continue;units.push({id:image.id,x:image.x,y:image.y,w:image.w,h:image.h,move:(dx,dy)=>{image.x+=dx;image.y+=dy;}});}
+    const strokes=(map.strokes||[]).filter(stroke=>!stroke.inbox),inkBounds=unionRectangles(draw.boxes());
+    if(strokes.length&&inkBounds)units.push({id:'__ink',...inkBounds,move:(dx,dy)=>{for(const stroke of strokes)stroke.points=stroke.points.map(([x,y])=>[x+dx,y+dy]);}});
+    if(!units.length){toast('目前沒有可排列的物件，可先將暫存內容放到畫布。');return;}
+    const positions=arrangeRectangles(units,{width:Math.max(240,canvas.clientWidth-64)}),byId=new Map(units.map(unit=>[unit.id,unit]));
+    const changed=positions.some(position=>Math.abs(position.dx)>.1||Math.abs(position.dy)>.1);
+    if(changed){snapshot(undefined,true);for(const position of positions)byId.get(position.id).move(position.dx,position.dy);}
+    selectedId=null;cards.deselect();assets.deselect();relations.deselect();renderMap();draw.render(true);
+    const bounds=unionRectangles(positions),largestHeight=Math.max(...positions.map(position=>position.h));view.k=clamp(Math.min(1,(canvas.clientWidth-64)/Math.max(1,bounds.w),(canvas.clientHeight-64)/Math.max(1,largestHeight)),.2,1);view.x=32-bounds.x*view.k;view.y=32-bounds.y*view.k;applyView();placeBar();
+    if(changed)save(map.id);toast(changed?'已從左上角整齊排列，可用 Ctrl / ⌘ + Z 復原。':'已經排列整齊。');
+  }catch(error){toast(error.message||'排列失敗，請重試。');}
+  finally{button.disabled=!ready||store.readOnly||!cur();button.removeAttribute('aria-busy');}
+}
+listen($('arrangeBtn'),'click',arrangeCanvas);
 function groupBoxes(){
   const m=cur(), out=[]; if(!m||!group) return out;
   for(const b of cards?.boxes()||[]) if(group.cards.has(b.id)) out.push(b);
-  for(const i of m.images||[]) if(group.images.has(i.id)) out.push(i);
-  const sb=draw?.boxes()||[]; (m.strokes||[]).forEach((s,i)=>{ if(group.strokes.has(s.id)&&sb[i]) out.push(sb[i]); });
+  for(const i of m.images||[]) if(!i.inbox&&group.images.has(i.id)) out.push(i);
+  const sb=draw?.boxes()||[]; (m.strokes||[]).filter(stroke=>!stroke.inbox).forEach((s,i)=>{ if(group.strokes.has(s.id)&&sb[i]) out.push(sb[i]); });
   for(const id of group.trees){ const t=treeOfRoot(m,id), b=t&&treeBox(t); if(b) out.push(b); }
   return out;
 }
@@ -1058,8 +1238,8 @@ function selectInRect(r){
   const m=cur(), hit=b=>b&&b.x<r.x+r.w&&b.x+b.w>r.x&&b.y<r.y+r.h&&b.y+b.h>r.y;
   group={cards:new Set, images:new Set, strokes:new Set, trees:new Set};
   for(const b of cards?.boxes()||[]) if(hit(b)) group.cards.add(b.id);
-  for(const i of m.images||[]) if(hit(i)) group.images.add(i.id);
-  const sb=draw?.boxes()||[]; (m.strokes||[]).forEach((s,i)=>{ if(hit(sb[i])) group.strokes.add(s.id); });
+  for(const i of m.images||[]) if(!i.inbox&&hit(i)) group.images.add(i.id);
+  const sb=draw?.boxes()||[]; (m.strokes||[]).filter(stroke=>!stroke.inbox).forEach((s,i)=>{ if(hit(sb[i])) group.strokes.add(s.id); });
   // A mind map joins when the box touches its central topic, and then moves as a whole.
   for(const t of treesOf(m)) if(hit(L.get(t.root.id))) group.trees.add(t.root.id);
   if(!groupSize()) group=null;
@@ -1068,9 +1248,9 @@ function clearGroup(){ if(!group) return; group=null; renderGroup(); }
 function renderGroup(){
   const m=cur();
   if(group&&m){
-    const ids=new Set((m.cards||[]).map(c=>c.id)); for(const id of group.cards) if(!ids.has(id)) group.cards.delete(id);
-    const imgs=new Set((m.images||[]).map(i=>i.id)); for(const id of group.images) if(!imgs.has(id)) group.images.delete(id);
-    const sts=new Set((m.strokes||[]).map(s=>s.id)); for(const id of group.strokes) if(!sts.has(id)) group.strokes.delete(id);
+    const ids=new Set((m.cards||[]).filter(card=>!card.inbox).map(c=>c.id)); for(const id of group.cards) if(!ids.has(id)) group.cards.delete(id);
+    const imgs=new Set((m.images||[]).filter(image=>!image.inbox).map(i=>i.id)); for(const id of group.images) if(!imgs.has(id)) group.images.delete(id);
+    const sts=new Set((m.strokes||[]).filter(stroke=>!stroke.inbox).map(s=>s.id)); for(const id of group.strokes) if(!sts.has(id)) group.strokes.delete(id);
     for(const id of group.trees) if(!treeOfRoot(m,id)) group.trees.delete(id);
     if(!groupSize()) group=null;
   }
@@ -1108,7 +1288,7 @@ function deleteGroup(){
   m.images=(m.images||[]).filter(i=>!group.images.has(i.id));
   m.strokes=(m.strokes||[]).filter(s=>!group.strokes.has(s.id));
   m.trees=(m.trees||[]).filter(t=>!group.trees.has(t.root.id));
-  if(m.root&&group.trees.has(m.root.id)){ const next=m.trees.shift(); m.root=next?next.root:null; m.rootX=next?next.x:0; m.rootY=next?next.y:0; }
+  if(m.root&&group.trees.has(m.root.id)){ const next=takeVisibleTree(m); m.root=next?next.root:null; m.rootX=next?next.x:0; m.rootY=next?next.y:0; }
   m.relations=(m.relations||[]).filter(r=>!gone.has(r.from)&&!gone.has(r.to));
   const n=groupSize(); group=null; selectedId=null;
   renderMap(); draw?.render(true); save(currentId); renderSidebar();
@@ -1240,6 +1420,7 @@ listen(document,'keydown',e=>{ if(e.key==='Escape' && viewing && !editingId && !
 // Another window of the app (or the side viewer) saved: take its newer maps and folders without writing back.
 listen(window,'storage',e=>{
   if(store.mode==='cloud') return;
+  if(e.key===WORKSPACES_KEY){try{const next=validateWorkspaces(JSON.parse(e.newValue||'[]'));if(next.some(item=>item.id===activeWorkspaceId()))workspaces=next;renderSidebar();}catch{}return;}
   if(e.key===FOLDER_KEY){ try{ folders=cleanFolders(JSON.parse(e.newValue||'[]')); }catch(err){} renderSidebar(); return; }
   if(e.key!==LS_KEY) return;
   let list; try{ list=JSON.parse(e.newValue||'[]'); }catch(err){ return; } if(!Array.isArray(list)) return;
@@ -1248,8 +1429,8 @@ listen(window,'storage',e=>{
   for(const [id,m] of incoming){ const mine=maps.get(id); if(!mine||(m.updatedAt||0)>(mine.updatedAt||0)){ if(id===currentId&&editingId) continue; maps.set(id,sanitizeMap(m)); if(id===currentId) curChanged=true; } }
   for(const id of [...maps.keys()]) if(!incoming.has(id)){ maps.delete(id); if(id===currentId) curChanged=true; }
   if(viewing&&maps.has(viewing)) $('viewTitle').textContent=maps.get(viewing).title||'未命名頁面';
-  if(curChanged){ if(!maps.has(currentId)){ const first=sortedMaps()[0]; openMap(first?first.id:null); } else { if(!idx.has(selectedId)) selectedId=null; syncHeader(); renderMap(); } }
-  renderSidebar();
+  if(curChanged){ if(!maps.has(currentId)){ const first=firstRegularMap(); openMap(first?first.id:null); } else { if(!idx.has(selectedId)) selectedId=null; syncHeader(); renderMap(); } }
+  renderSidebar();if(!curChanged)cards?.render();characterHub?.render();syncCtxRail();
 });
 // Opens the node's page, creating one named after the node the first time.
 function openNodePage(id){
@@ -1257,25 +1438,27 @@ function openNodePage(id){
   if(editingId) commitEdit();
   const pid=ensureNodePage(info); if(pid) goto(pid);
 }
-function isSubPage(m){ const p=m&&m.parentId&&maps.get(m.parentId); return !!p&&boardRefs(p).has(m.id); }
+function isSubPage(m){ const p=m&&m.parentId&&maps.get(m.parentId); return !!p&&workspaceOf(p)===workspaceOf(m)&&boardRefs(p).has(m.id); }
 function topPageOf(id){ let m=maps.get(id); for(let n=0; m&&isSubPage(m)&&n<50; n++) m=maps.get(m.parentId); return m?.id; }
-function pageTree(m){ const out=[m], seen=new Set([m.id]); for(let i=0;i<out.length;i++) for(const id of boardRefs(out[i])){ const c=maps.get(id); if(c&&!seen.has(id)){ seen.add(id); out.push(c); } } return out; }
+function firstRegularMap(){ return sortedMaps().find(m=>!maps.get(topPageOf(m.id))?.dailyDate && !isSubPage(m)); }
+function pageTree(m){ const out=[m], seen=new Set([m.id]); for(let i=0;i<out.length;i++) for(const id of boardRefs(out[i])){ const c=maps.get(id); if(c&&workspaceOf(c)===workspaceOf(m)&&!seen.has(id)){ seen.add(id); out.push(c); } } return out; }
+function exportMapTree(map){const result=pageTree(map),seen=new Set(result.map(item=>item.id));for(let i=0;i<result.length;i++){for(const card of allCards(result[i].cards)){if(card.type!=='character')continue;for(const source of characterSourceMaps(card,result[i],[...maps.values()]))for(const item of pageTree(source)){if(!seen.has(item.id)){seen.add(item.id);result.push(item);}}}}return result;}
 function createPage(){
   const parent=cur(); if(!parent||store.readOnly) return null;
   const m=makeMap(false); m.root=null; m.title='未命名頁面'; m.parentId=parent.id;
   const last=sortedMaps().pop(); if(last&&m.createdAt<=last.createdAt) m.createdAt=last.createdAt+1;
   maps.set(m.id,m); save(m.id,true); return m.id;
 }
-function pageInfo(id){ const m=maps.get(id); return m ? {title:m.title, count:(m.cards||[]).length+(m.images||[]).length+(m.strokes||[]).length+treesOf(m).length} : null; }
+function pageInfo(id){ const m=maps.get(id); return m ? {title:m.title, count:(m.cards||[]).filter(card=>!card.inbox).length+(m.images||[]).filter(image=>!image.inbox).length+(m.strokes||[]).filter(stroke=>!stroke.inbox).length+treesOf(m).length} : null; }
 function renamePage(id,title){ const m=maps.get(id); if(!m||store.readOnly||!title||m.title===title) return; m.title=title; save(id); renderSidebar(); }
-function sortedFolders(){ return [...folders].sort((a,b)=>a.createdAt-b.createdAt); }
-const folderById=id=>id?folders.find(f=>f.id===id):undefined;
+function sortedFolders(){ return inWorkspace(folders).sort((a,b)=>a.createdAt-b.createdAt); }
+const folderById=id=>id?folders.find(f=>f.id===id&&workspaceOf(f)===activeWorkspaceId()):undefined;
 function childFolders(id){ return sortedFolders().filter(f=>(f.parentId||null)===(id||null)); }
 // True when folder `id` is `ancestorId` itself or sits somewhere inside it.
 function isFolderInside(id, ancestorId){ for(let f=folderById(id), n=0; f&&n<500; f=folderById(f.parentId), n++) if(f.id===ancestorId) return true; return false; }
 function folderPath(f){ const names=[]; for(let x=f, n=0; x&&n<500; x=folderById(x.parentId), n++) names.unshift(x.name||'未命名資料夾'); return names.join(' / '); }
 function folderTree(){ const out=[]; (function walk(id){ for(const f of childFolders(id)){ out.push(f); walk(f.id); } })(null); return out; }
-function mapsUnder(id){ let n=0; for(const m of maps.values()) if(m.folderId&&isFolderInside(m.folderId,id)) n++; return n; }
+function mapsUnder(id){ let n=0; for(const m of inWorkspace([...maps.values()])) if(m.folderId&&isFolderInside(m.folderId,id)) n++; return n; }
 function openAncestors(id){ let changed=false; for(let f=folderById(id), n=0; f&&n<500; f=folderById(f.parentId), n++) if(!f.open){ f.open=true; changed=true; } return changed; }
 let renamingFolder=null, sidebarActive=null;
 function moreButton(label, data){
@@ -1297,7 +1480,7 @@ function pageRow(m, folderId, depth, out, seen=new Set()){
   const row=document.createElement('div'); row.className='page'+(m.id===currentId||hiddenCurrent?' active':'')+(depth?' nested':'')+(isSubPage(m)?' subpage':'')+(kids.length?' has-pages':'')+(open?' open':''); row.dataset.id=m.id; row.tabIndex=0; row.setAttribute('role','button');
   if(folderId) row.dataset.folder=folderId;
   if(depth) row.style.setProperty('--depth',depth);
-  row.draggable=!store.readOnly&&!isSubPage(m);
+  row.draggable=!store.readOnly&&!isSubPage(m)&&!m.dailyDate;
   if(kids.length){ const chev=document.createElement('i'); chev.className='bi bi-chevron-right pchev'; chev.dataset.expand=m.id; chev.title=open?'收合頁面':'展開頁面'; row.setAttribute('aria-expanded',String(open)); row.append(chev); }
   const i=document.createElement('span'); i.className='pi'; i.innerHTML=kids.length?folderIcon(null,18):stickyIcon(m.color,18);
   const t=document.createElement('span'); t.className='pt'; t.textContent=m.title||'未命名心智圖';
@@ -1323,12 +1506,17 @@ function folderRow(f, count, open, depth){
   return row;
 }
 function renderSidebar(){
+  $('workspaceName').textContent=workspaces.find(item=>item.id===activeWorkspaceId())?.name||'YoZu ???';
+  $('workspaceBtn').disabled=!ready||[$('importBtn'),$('exportBtn')].some(button=>button.getAttribute('aria-busy')==='true');
   const q=$('search').value.trim().toLowerCase();
   const match=m=>!q||(m.title||'').toLowerCase().includes(q);
-  const all=sortedMaps().filter(m=>!isSubPage(m)||(q&&match(m))), known=new Set(folders.map(f=>f.id));
+  const all=sortedMaps().filter(m=>!maps.get(topPageOf(m.id))?.dailyDate && (!isSubPage(m)||(q&&match(m)))), known=new Set(folders.map(f=>f.id));
   sidebarActive=topPageOf(currentId);
   const box=$('pages'); box.innerHTML=''; let shown=0;
-  $('count').textContent=all.length?String(all.length):'';
+  // Rebuild this small heading explicitly: React refreshes must not retain stale page rows here.
+  const heading=document.createElement('span'), count=document.createElement('span');
+  heading.textContent='心智圖'; count.id='count'; count.textContent=all.length?String(all.length):'';
+  $('regularHeading').replaceChildren(heading,count);
   // Children are built first so a folder can be hidden when nothing inside matches the search.
   function addFolder(f, depth, out){
     const kids=document.createDocumentFragment(); let kidShown=0;
@@ -1354,10 +1542,64 @@ function renderSidebar(){
   const input=box.querySelector('[data-rename]'); if(input){ input.focus(); input.select(); }
   $('newBtn').disabled=store.readOnly||!ready;
   $('newFolderBtn').disabled=store.readOnly||!ready;
-  $('importBtn').disabled=store.readOnly||!ready;
-  $('exportBtn').disabled=!cur();
-  $('exportAllBtn').disabled=!maps.size;
+  const fileBusy=[$('importBtn'),$('exportBtn')].some(button=>button.getAttribute('aria-busy')==='true');
+  $('importBtn').disabled=store.readOnly||!ready||fileBusy;
+  $('exportBtn').disabled=!ready||fileBusy;
+  $('exportAllBtn').disabled=!ready||fileBusy;
+  renderDailyArea();
 }
+function renderDailyArea(){
+  const active=maps.get(topPageOf(currentId));
+  const dailyMode=validDailyDate(active?.dailyDate);
+  app.classList.toggle('daily-mode',dailyMode);
+  $('dailyControls').hidden=!dailyMode;
+  $('dailyContent').hidden=!dailyMode;
+  for(const id of ['newBtn','newFolderBtn','regularHeading','pages']) $(id).hidden=dailyMode;
+  if(validDailyDate(active?.dailyDate)) selectedDailyDate=active.dailyDate;
+  $('dailyArea').classList.toggle('active',!!active?.dailyDate);
+  $('dailyDate').value=selectedDailyDate;
+  const daily=sortedMaps().filter(m=>validDailyDate(m.dailyDate)), existing=daily.find(m=>m.dailyDate===selectedDailyDate);
+  $('dailyCount').textContent=daily.length?String(daily.length):'';
+  $('dailyStatus').textContent=existing ? `${selectedDailyDate} · 已儲存` : '選擇日期，開啟當天的獨立畫布';
+  for(const id of ['dailyOpen','dailyPrev','dailyNext','dailyToday','dailyDate','dailySaved']) $(id).disabled=!ready;
+  const options=[new Option('已儲存的日期',''),...daily.sort((a,b)=>b.dailyDate.localeCompare(a.dailyDate)).map(m=>new Option(m.dailyDate,m.id))];
+  $('dailySaved').replaceChildren(...options); $('dailySaved').value=existing?.id||'';
+  $('dailyPages').replaceChildren(); $('dailyLinks').replaceChildren();
+  if(dailyMode){
+    pageRow(active,null,0,$('dailyPages'));
+    const linked=sortedMaps().filter(m=>!maps.get(topPageOf(m.id))?.dailyDate && (m.relatedDates||[]).includes(selectedDailyDate));
+    for(const m of linked) $('dailyLinks').append(pageRow(m,null,0));
+    if(!linked.length){ const empty=document.createElement('p'); empty.className='daily-status'; empty.textContent='尚未關聯一般心智圖。可在一般心智圖的「⋯」中設定關聯日期。'; $('dailyLinks').append(empty); }
+  }
+}
+function openDaily(date){
+  if(!ready || !validDailyDate(date)) { $('dailyDate').value=selectedDailyDate; return; }
+  let m=sortedMaps().find(m=>m.dailyDate===date);
+  if(!m){
+    if(store.readOnly){ toast('這一天還沒有每日心智圖，目前為唯讀模式'); renderDailyArea(); return; }
+    m=makeMap(false); m.id='daily-'+date; m.title=`每日心智圖 · ${date}`; m.dailyDate=date; m.root.text=date;
+    maps.set(m.id,m); save(m.id,true);
+  }
+  selectedDailyDate=date; goto(m.id);
+}
+listen($('dailyOpen'),'click',()=>openDaily(selectedDailyDate));
+listen($('dailyBack'),'click',()=>{
+  const m=maps.get(lastRegularId) || sortedMaps().find(m=>!maps.get(topPageOf(m.id))?.dailyDate);
+  if(m) goto(m.id); else { history.replaceState(null,'',location.pathname+location.search); openMap(null); }
+});
+for(const id of ['dailyPages','dailyLinks']) {
+  listen($(id),'click',e=>{
+    const more=e.target.closest('[data-more]'); if(more) { openPageMenu(more.dataset.more,more); return; }
+    const expand=e.target.closest('[data-expand]'); if(expand) { togglePageOpen(expand.dataset.expand); return; }
+    const row=e.target.closest('.page'); if(row) goto(row.dataset.id);
+  });
+  listen($(id),'keydown',e=>{ if(e.key==='Enter' && e.target.classList.contains('page')) goto(e.target.dataset.id); });
+}
+listen($('dailyDate'),'change',()=>openDaily($('dailyDate').value));
+listen($('dailyPrev'),'click',()=>openDaily(shiftDailyDate(selectedDailyDate,-1)));
+listen($('dailyNext'),'click',()=>openDaily(shiftDailyDate(selectedDailyDate,1)));
+listen($('dailyToday'),'click',()=>openDaily(todayDate()));
+listen($('dailySaved'),'change',()=>{ const m=maps.get($('dailySaved').value); if(m?.dailyDate) openDaily(m.dailyDate); });
 listen($('pages'), 'click', e=>{
   const mb=e.target.closest('[data-more]');
   if(mb){ e.stopPropagation(); openPageMenu(mb.dataset.more, mb); return; }
@@ -1384,7 +1626,7 @@ listen($('newFolderBtn'), 'click', ()=>createFolder());
 /* ---------------- folders ---------------- */
 function createFolder(moveId, parentId){
   if(store.readOnly||!ready) return;
-  const last=sortedFolders().pop(), f={id:uid('f'), name:'新資料夾', open:true, createdAt:Math.max(Date.now(), (last?last.createdAt:0)+1)};
+  const last=sortedFolders().pop(), f={id:uid('f'), workspaceId:activeWorkspaceId(), name:'新資料夾', open:true, createdAt:Math.max(Date.now(), (last?last.createdAt:0)+1)};
   if(folderById(parentId)){ f.parentId=parentId; openAncestors(parentId); }
   folders.push(f); saveFolders();
   if(moveId) setFolder(moveId, f.id, true);
@@ -1448,53 +1690,100 @@ listen($('pages'), 'drop', e=>{
 });
 listen($('pages'), 'dragend', ()=>{ dragItem=null; clearDropMarks(); $('pages').querySelectorAll('.dragging').forEach(el=>el.classList.remove('dragging')); });
 
-async function exportFile(all) {
+async function exportFile(scope='workspace',workspaceId=activeWorkspaceId()) {
+  if([$('exportBtn'),$('importBtn')].some(button=>button.getAttribute('aria-busy')==='true')) return;
   if(editingId) commitEdit();
-  const selected = all ? sortedMaps() : (cur() ? pageTree(cur()) : []);
-  if(!selected.length) return;
+  cards?.commit();
+  // Freeze the complete canvas before reading attachments asynchronously.
+  const selected = structuredClone(scope==='current'?(cur()?exportMapTree(cur()):[]):inWorkspace([...maps.values()],scope==='all'?null:workspaceId).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0)));
+  if(!selected.length&&scope==='current') return;
+  const name = scope==='all'?'YoZuMind-所有工作區':scope==='current'?(selected[0].title||'未命名心智圖'):(workspaces.find(item=>item.id===workspaceId)?.name||'工作區');
+  const exportButtons=[$('exportBtn'),$('exportAllBtn')];
+  exportButtons.forEach(b=>{b.disabled=true;b.setAttribute('aria-busy','true');});
+  renderSidebar();toast('正在整理圖片與文件，建立 ZIP 存檔…');
+  try {
+  await notesHub?.flush();
   const used=new Set(); for(const m of selected) for(let f=folderById(m.folderId), n=0; f&&n<500; f=folderById(f.parentId), n++) used.add(f.id);
+  const exportedFolders=structuredClone(scope==='all'?folders:scope==='current'?folders.filter(f=>used.has(f.id)):inWorkspace(folders,workspaceId));
   // Attached files travel inside the export so another browser can open them.
   const files={};
   for(const m of selected) (function walk(list){ for(const c of list||[]){ if(c.type==='file'&&c.fileId) files[c.fileId]=null; walk(c.cards); } })(m.cards);
-  for(const id of Object.keys(files)){ const b=await getFile(id); if(b) files[id]=await blobToDataUrl(b); else delete files[id]; }
-  const blob = new Blob([serializeMaps(selected, all ? folders : folders.filter(f=>used.has(f.id)), files)], {type:'application/json;charset=utf-8'});
+  for(const id of Object.keys(files)){ const b=await getFile(id); if(!b) throw new Error('有附件無法讀取，未產生不完整的備份。請重新加入遺失的附件後再匯出。'); files[id]=await blobToDataUrl(b); }
+  const library=await exportGalleryImages(scope==='all'?null:workspaceId),stagePresets=await listStagePresets(scope==='all'?null:workspaceId);
+  const exportedWorkspaces=workspaces.filter(item=>scope==='all'||item.id===workspaceId);
+  const notes=await listNotes(scope==='all'?null:workspaceId);
+  const archive=await createArchive({maps:selected,folders:exportedFolders,files,gallery:library,stagePresets,workspaces:exportedWorkspaces,notes});
+  const blob = new Blob([archive], {type:'application/zip'});
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
-  const name = all ? 'YoZuMind-全部備份' : (cur().title || '未命名心智圖');
-  link.download = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g,'_').slice(0,100) + '.json';
+  link.download = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g,'_').slice(0,100) + '.zip';
   link.href = url; document.body.appendChild(link); link.click(); link.remove();
   setTimeout(()=>URL.revokeObjectURL(url), 10000);
-  toast('已匯出 JSON 存檔，可用「匯入」還原。');
+  toast('已匯出 ZIP 存檔，包含心智圖、圖片、附件、圖庫、筆記關聯與常用階段，可在其他電腦匯入。');
+  } catch(error) {
+    toast(error.message||'匯出失敗，請重試。');
+  } finally {
+    exportButtons.forEach(b=>b.removeAttribute('aria-busy')); renderSidebar();
+  }
 }
-listen($('exportBtn'), 'click', ()=>exportFile(false));
-listen($('exportAllBtn'), 'click', ()=>exportFile(true));
+async function chooseExport(all=false) {if(galleryPage?.isBusy()){toast('圖庫圖片處理中，請稍候再匯出。');return;}const choice=await chooseExportWorkspace(workspaces,activeWorkspaceId(),{all,hasMap:!!cur()});if(choice)await exportFile(choice.scope,choice.workspaceId);}
+listen($('exportBtn'), 'click', ()=>chooseExport());
+listen($('exportAllBtn'), 'click', ()=>chooseExport(true));
 listen($('importBtn'), 'click', ()=>{ $('importFile').value=''; $('importFile').click(); });
 listen($('importFile'), 'change', async e=>{
   const file = e.target.files[0];
-  if(!file || store.readOnly || !ready) return;
+  if(!file || store.readOnly || !ready || $('exportBtn').getAttribute('aria-busy')==='true') return;
   $('importBtn').disabled=true;
+  $('importBtn').setAttribute('aria-busy','true');
+  renderSidebar();toast('正在讀取存檔與還原圖片…');
+  let importedGallery=[],storedFiles=[],importedPresets=[],importedMaps=[],importedNotes=[];
+  const originalFolders=[...folders],originalWorkspaces=[...workspaces],originalActive=activeWorkspaceId(),originalCurrent=currentId;let workspaceStateChanged=false,persistedMaps=false;
   try {
-    if(file.size > MAX_FILE_BYTES) throw new Error('存檔不可超過 300 MB。');
-    const text = await file.text();
-    const imported = parseMaps(text, uid);
-    for(const [id,url] of parseAttachments(text)){ const b=dataUrlToBlob(url); if(b) await putFile(id,b).catch(()=>{}); }
-    const known = new Set(folders.map(f=>f.id)), added = parseFolders(text).filter(f=>!known.has(f.id));
+    const loaded=await readArchive(file),sources=archiveWorkspaces(loaded),choice=await chooseImportWorkspace(sources,workspaces,activeWorkspaceId());
+    if(!choice)return;
+    const archive=selectArchiveWorkspace(loaded,choice.sourceId),text=archive.text;
+    const selectedSources=sources.filter(item=>choice.sourceId===null||item.id===choice.sourceId),workspaceIds=new Map(),newWorkspaces=[];
+    for(const source of selectedSources){const id=choice.targetId==='__new__'?uid('workspace'):choice.targetId;workspaceIds.set(source.id,id);if(choice.targetId==='__new__')newWorkspaces.push({id,name:uniqueWorkspaceName(selectedSources.length===1?choice.name:source.name,[...workspaces,...newWorkspaces]),createdAt:Date.now()+newWorkspaces.length});}
+    const nextWorkspaces=validateWorkspaces([...workspaces,...newWorkspaces]);
+    const project=JSON.parse(text),imported=Array.isArray(project.maps)&&project.maps.length===0?[]:parseMaps(text,uid);importedMaps=imported.map(map=>map.id);
+    for(const map of imported)map.workspaceId=workspaceIds.get(workspaceOf(map));
+    const noteIds=new Map(archive.notes.map(note=>[note.id,uid('note')]));
+    remapNoteLinks(imported,noteIds);
+    importedNotes=await importNotes(archive.notes.map(note=>({...note,id:noteIds.get(note.id),workspaceId:workspaceIds.get(workspaceOf(note))})));
+    // Imported attachment bodies get fresh IDs, so another backup cannot overwrite existing files.
+    const attachments=new Map(parseAttachments(text)), fileIds=new Map();
+    for(const map of imported) (function walk(list=[]) {for(const card of list){if(card.type==='file'){if(archive.zip&&!attachments.has(card.fileId)) throw new Error('存檔缺少附件內容，匯入未完成。');if(attachments.has(card.fileId)){if(!fileIds.has(card.fileId)) fileIds.set(card.fileId,uid('f'));card.fileId=fileIds.get(card.fileId);}}if(card.cards) walk(card.cards);}})(map.cards);
+    for(const [oldId,newId] of fileIds) {
+      const blob=dataUrlToBlob(attachments.get(oldId));
+      if(!blob) throw new Error('附件資料不完整，匯入未完成。');
+      try { await putFile(newId,blob);storedFiles.push(newId); } catch { throw new Error('附件儲存失敗，匯入未完成。請確認瀏覽器儲存空間。'); }
+    }
+    const sourceFolders=parseFolders(text),folderIds=new Map(sourceFolders.map(folder=>[folder.id,uid('folder')]));
+    const added = sourceFolders.map(folder=>({...folder,id:folderIds.get(folder.id),workspaceId:workspaceIds.get(workspaceOf(folder)),...(folder.parentId?{parentId:folderIds.get(folder.parentId)}:{})}));
+    for(const map of imported) {if(map.folderId) {const id=folderIds.get(map.folderId);if(id) map.folderId=id;else delete map.folderId;}}
+    importedGallery=await importGalleryImages(archive.gallery.map(image=>({...image,workspaceId:workspaceIds.get(workspaceOf(image))})),uid,null);
+    importedPresets=await importStagePresets(archive.stagePresets.map(preset=>({...preset,workspaceId:workspaceIds.get(workspaceOf(preset))})),uid,null);
     if(editingId) commitEdit();
     folders=cleanFolders([...folders, ...added]);
     imported.forEach(map=>{ if(map.folderId && !folders.some(f=>f.id===map.folderId)) delete map.folderId; maps.set(map.id,map); });
+    workspaces=persistWorkspaceState(nextWorkspaces,originalActive);workspaceStateChanged=true;
     // Persist the complete batch before displaying it; roll back on quota errors.
     if(store.mode!=='cloud' && !lsSaveAll()) {
-      imported.forEach(map=>maps.delete(map.id)); folders=folders.filter(f=>known.has(f.id));
       throw new Error('瀏覽器空間不足，匯入未完成；原有心智圖已保留。');
     }
-    if(added.length) saveFolders();
+    persistedMaps=store.mode!=='cloud';
+    if((added.length||newWorkspaces.length)&&!await saveFolders())throw new Error('工作區或資料夾儲存失敗，匯入未完成。');
     if(store.mode==='cloud') imported.forEach(map=>save(map.id,true));
-    $('search').value=''; goto(imported[0].id);
-    toast(`已匯入 ${imported.length} 張心智圖，原有資料已保留。`);
+    $('search').value='';const firstTarget=workspaceIds.get(selectedSources[0].id);switchWorkspace(firstTarget);if(imported.length)goto(imported[0].id);else renderSidebar();characterHub?.refresh();notesHub?.refresh();
+    toast(`已匯入 ${imported.length} 張心智圖${importedGallery.length?`、${importedGallery.length} 張圖庫圖片與標籤`:''}${importedPresets.length?`、${importedPresets.length} 個常用階段`:''}${importedNotes.length?`、${importedNotes.length} 篇筆記與關聯`:''}，原有資料已保留。`);
   } catch(error) {
-    toast(error instanceof SyntaxError ? 'JSON 格式錯誤，請選擇完整的存檔。' : (error.message || '無法讀取存檔，請重試。'));
+    for(const id of importedMaps)maps.delete(id);folders=originalFolders;
+    if(workspaceStateChanged){try{workspaces=persistWorkspaceState(originalWorkspaces,originalActive);}catch{workspaces=originalWorkspaces;}}
+    if(persistedMaps){lsSaveAll();await saveFolders();openMap(originalCurrent);}
+    await Promise.allSettled([removeGalleryImages(importedGallery),removeStagePresets(importedPresets),removeNotes(importedNotes),...storedFiles.map(deleteFile)]);
+    toast(error instanceof SyntaxError ? '存檔紀錄格式錯誤，請選擇完整的存檔。' : (error.message || '無法讀取存檔，請重試。'));
   } finally {
-    $('importFile').value=''; renderSidebar();
+    $('importFile').value=''; $('importBtn').removeAttribute('aria-busy'); renderSidebar();
   }
 });
 
@@ -1507,6 +1796,10 @@ function createMap(sample){
   if(!sample){ setTimeout(()=>{ $('title').focus(); $('title').select(); }, 50); }
 }
 function goto(id){
+  if(maps.has(id)&&workspaceOf(maps.get(id))!==activeWorkspaceId())switchWorkspace(workspaceOf(maps.get(id)));
+  characterHub?.hide();
+  galleryPage?.hide();
+  notesHub?.hide();
   if(openAncestors(maps.get(topPageOf(id))?.folderId)) saveFolders();
   revealPage(id);
   if(location.hash.slice(1)!==id) location.hash=id;
@@ -1515,9 +1808,10 @@ function goto(id){
 }
 function openMap(id){
   if(editingId) commitEdit();
-  if(!maps.has(id)) id=null;
+  if(!maps.has(id)||workspaceOf(maps.get(id))!==activeWorkspaceId()) id=null;
   const changed=id!==currentId;
   currentId=id;
+  if(id && !maps.get(topPageOf(id))?.dailyDate) lastRegularId=id;
   if(changed){ for(const el of els.values()) el.remove(); els.clear(); group=null; }
   const m=cur();
   selectedId = m ? firstRootId(m) : null;
@@ -1526,6 +1820,7 @@ function openMap(id){
 }
 function syncHeader(){
   const m=cur();
+  $('arrangeBtn').disabled=!ready||!m||store.readOnly||$('arrangeBtn').getAttribute('aria-busy')==='true';
   $('title').value = m ? (m.title||'') : '';
   $('title').disabled = !m || store.readOnly;
   $('crumbIcon').innerHTML = stickyIcon(m?.color,20);
@@ -1575,7 +1870,28 @@ function showPop(p, anchor, align){
   p.style.left=left+'px'; p.style.top=top+'px';
 }
 let menuAnchor=null;
-function openPageMenu(id, anchor){ menuFor=id; menuAnchor=anchor; showPop($('pageMenu'), anchor); }
+function openPageMenu(id, anchor){
+  menuFor=id; menuAnchor=anchor;
+  const daily=!!maps.get(topPageOf(id))?.dailyDate;
+  for(const key of ['dailyLink','move','dup']) $('pageMenu').querySelector(`[data-m="${key}"]`).hidden=daily;
+  showPop($('pageMenu'), anchor);
+}
+function renderMapDates(){
+  const m=maps.get(menuFor); $('mapLinkedDates').replaceChildren();
+  for(const date of m?.relatedDates||[]) {
+    const b=document.createElement('button'); b.className='mi'; b.dataset.removeDate=date; b.textContent=`${date}　× 移除`; $('mapLinkedDates').append(b);
+  }
+}
+listen($('addMapDate'),'click',()=>{
+  const m=maps.get(menuFor), date=$('mapLinkDate').value;
+  if(!m || store.readOnly || !validDailyDate(date)) return;
+  m.relatedDates=[...new Set([...(m.relatedDates||[]),date])].sort(); save(m.id); renderMapDates(); renderSidebar();
+});
+listen($('mapLinkedDates'),'click',e=>{
+  const date=e.target.closest('[data-remove-date]')?.dataset.removeDate, m=maps.get(menuFor);
+  if(!m || !date || store.readOnly) return;
+  m.relatedDates=(m.relatedDates||[]).filter(d=>d!==date); save(m.id); renderMapDates(); renderSidebar();
+});
 function openMovePop(kind, id, anchor){
   const pop=$('movePop'); pop.innerHTML='';
   const current=kind==='map'?maps.get(id)?.folderId:folderById(id)?.parentId;
@@ -1622,6 +1938,9 @@ listen($('pageMenu'), 'click', e=>{
   const m=maps.get(menuFor); if(!m) return closePops();
   if(b.dataset.m==='rename'){ closePops(); goto(m.id); setTimeout(()=>{ $('title').focus(); $('title').select(); },60); }
   else if(b.dataset.m==='move'){ openMovePop('map', m.id, menuAnchor&&menuAnchor.isConnected?menuAnchor:$('pageMenu')); }
+  else if(b.dataset.m==='dailyLink'){
+    $('mapLinkDate').value=selectedDailyDate; renderMapDates(); showPop($('dailyLinkPop'),menuAnchor&&menuAnchor.isConnected?menuAnchor:$('pageMenu'));
+  }
   else if(b.dataset.m==='dup'){
     closePops(); const c=parseMaps(JSON.stringify(m),uid)[0]; c.title=(m.title||'未命名心智圖')+' 的副本';
     const last=sortedMaps().pop(); c.createdAt=Math.max(Date.now(), (last?last.createdAt:0)+1); c.rev='';
@@ -1635,8 +1954,9 @@ listen($('pageMenu'), 'click', e=>{
 function deleteMap(id){
   const wasCur=id===currentId; maps.delete(id); undoS.delete(id); redoS.delete(id);
   removeRemote(id);
-  if(wasCur){ const first=sortedMaps()[0]; if(first) goto(first.id); else { history.replaceState(null,'',location.pathname+location.search); openMap(null); } }
-  else renderSidebar();
+  if(wasCur){ const first=firstRegularMap(); if(first) goto(first.id); else { history.replaceState(null,'',location.pathname+location.search); openMap(null); } }
+  else {renderSidebar();cards?.render();syncCtxRail();}
+  characterHub?.render();
   toast('已刪除心智圖');
 }
 (function buildColors(){
@@ -1673,6 +1993,7 @@ listen(document, 'pointerdown', e=>{ if(!e.target.closest('.pop') && !e.target.c
 
 /* zoom bar */
 listen($('zIn'), 'click', ()=>zoomCenter(1.2));
+listen($('zRange'),'input',e=>zoomCenter(Number(e.target.value)/100/view.k));
 listen($('zOut'), 'click', ()=>zoomCenter(1/1.2));
 listen($('zLabel'), 'click', ()=>zoomCenter(1/view.k));
 listen($('zFit'), 'click', fit);
@@ -1702,14 +2023,16 @@ let toastT=null;
 function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),2400); }
 
 /* hash routing */
-listen(window, 'hashchange', ()=>{ const h=location.hash.slice(1); if(h && maps.has(h) && h!==currentId) openMap(h); });
+listen(window, 'hashchange', ()=>{ const h=location.hash.slice(1); if(h && maps.has(h) && h!==currentId) goto(h); });
 listen(window, 'resize', ()=>{ placeBar(); });
 
 /* ---------------- boot ---------------- */
 function afterLoad(){
   ready=true;
+  ensureKnownWorkspaces();
   const h=location.hash.slice(1);
-  const target = maps.has(h) ? h : (sortedMaps()[0]||{}).id || null;
+  if(maps.has(h)&&workspaceOf(maps.get(h))!==activeWorkspaceId())workspaces=persistWorkspaceState(workspaces,workspaceOf(maps.get(h)));
+  const target = maps.has(h) ? h : (firstRegularMap()||{}).id || null;
   if(target && location.hash.slice(1)!==target && maps.has(h)===false && h) history.replaceState(null,'','#'+target);
   openMap(target); setStatus(); applyReadOnly();
 }
@@ -1718,7 +2041,7 @@ function onSnap(snap){
   const seen=new Set(); let curChanged=false;
   for(const d of snap.docs){
     const data=d.data();
-    if(d.id===FOLDER_DOC){ folders=cleanFolders(data&&data.folders); continue; }
+    if(d.id===FOLDER_DOC){ folders=cleanFolders(data&&data.folders);if(Array.isArray(data?.workspaces)){try{workspaces=validateWorkspaces(data.workspaces);}catch{}}continue; }
     if(!data||!('root' in data)) continue; seen.add(d.id);
     const local=maps.get(d.id);
     if(local && data.rev && myRevs.has(data.rev)) continue;
@@ -1732,11 +2055,13 @@ function onSnap(snap){
     for(const id of [...maps.keys()]) if(!seen.has(id) && !isBusy(id)) { maps.delete(id); if(id===currentId) curChanged=true; }
   }
   if(firstSnap){ firstSnap=false; afterLoad(); return; }
-  renderSidebar();
+  ensureKnownWorkspaces();renderSidebar();
   if(curChanged){
-    if(!cur()){ const f=sortedMaps()[0]; openMap(f?f.id:null); }
+    if(!cur()){ const f=firstRegularMap(); openMap(f?f.id:null); }
     else { syncHeader(); renderMap(); if(!idx.has(selectedId)) selectedId=null; placeBar(); }
   }
+  else cards?.render();
+  characterHub?.render();syncCtxRail();
 }
 async function init(){
   updateEmpty(); renderSidebar(); setStatus();
@@ -1767,11 +2092,37 @@ function nextZ(){ const m=cur(); let z=0; for(const o of [...(m?.images||[]),...
 function clearNodeSelection(){ if(editingId) commitEdit(); selectedId=null; for(const el of els.values()) el.classList.remove('sel'); hideBar(); }
 // Drawing goes first, then relations, so their capture-phase pointer handlers win over images and cards.
 draw=setupDraw({nextZ,canvas,world,button:$('drawBtn'),rail:$('toolrail'),getMap:cur,getView:()=>view,uid,snapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();cards?.deselect();assets?.deselect();relations?.deselect();}});
-relations=setupRelations({canPin:r=>!!relationPin(r),pin:pinFromRelation,canvas,world,button:$('relationBtn'),getMap:cur,getView:()=>view,getBox:id=>pinHidden.has(id)?null:L.get(id)||(cur()?.images||[]).find(i=>i.id===id)||cards?.box(id),uid,snapshot,dropSnapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();cards?.deselect();assets?.deselect();}});
-assets=setupCanvasAssets({nextZ,canvas,world,getMap:cur,getView:()=>view,uid,snapshot,save,toast,canEdit:()=>!store.readOnly,clearNodeSelection:()=>{clearNodeSelection();cards?.deselect();relations?.deselect();},onChange:()=>{ relations?.render(); drawPinEdges(); },isHidden:id=>pinHidden.has(id),moved:objectMoved,pinStart,hoverDrop:(x,y)=>cards?.hoverDrop(x,y),dropImage:(x,y,image)=>!!cards?.dropImage(x,y,image)});
-cards=setupCards({createPage,pageInfo,openPage:id=>goto(id),viewPage:id=>{ if(editingId) commitEdit(); openViewer(id); },renamePage,pagesChanged:()=>renderSidebar(),nextZ,canvas,world,rail:$('toolrail'),getMap:cur,getView:()=>view,uid,snapshot,dropSnapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();assets?.deselect();relations?.deselect();},hasNodeSelection:()=>!!selectedId,createTree,isHidden:id=>pinHidden.has(id),moved:objectMoved,pinStart,hostOf:id=>hostOf(id),nodeAction,onChange:()=>{ relations?.render(); drawPinEdges(); if(!document.querySelector('.card.dragging')&&hostsResized()) renderMap(); }});
+relations=setupRelations({canPin:r=>!!relationPin(r),pin:pinFromRelation,canvas,world,button:$('relationBtn'),getMap:cur,getView:()=>view,getBox:id=>pinHidden.has(id)?null:L.get(id)||(cur()?.images||[]).find(i=>i.id===id&&!i.inbox)||cards?.box(id),uid,snapshot,dropSnapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();cards?.deselect();assets?.deselect();}});
+assets=setupCanvasAssets({stageImages:stageClipboardImages,receiveImages:(files,target)=>!!cards?.receiveImages(files,target),nextZ,canvas,world,getMap:cur,getView:()=>view,uid,snapshot,save,toast,canEdit:()=>!store.readOnly,clearNodeSelection:()=>{clearNodeSelection();cards?.deselect();relations?.deselect();},onChange:()=>{ relations?.render(); drawPinEdges(); },isHidden:id=>pinHidden.has(id),moved:objectMoved,pinStart,hoverDrop:(x,y)=>cards?.hoverDrop(x,y),dropImage:(x,y,image)=>!!cards?.dropImage(x,y,image)});
+cards=setupCards({getMaps:()=>inWorkspace([...maps.values()]),locateTodo:locateTodoCard,getNote:cachedNote,openNote:id=>{if(cachedNote(id))notesHub.show(id);else toast('這篇筆記已刪除或不在目前工作區，請重新設定關聯。');},chooseGallery:onSelect=>gallery?.pick(onSelect),createPage,pageInfo,openPage:id=>goto(id),viewPage:id=>{ if(editingId) commitEdit(); openViewer(id); },renamePage,pagesChanged:()=>renderSidebar(),nextZ,canvas,world,rail:$('toolrail'),getMap:cur,getView:()=>view,uid,snapshot,dropSnapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();assets?.deselect();relations?.deselect();},hasNodeSelection:()=>!!selectedId,createTree,isHidden:id=>pinHidden.has(id),moved:objectMoved,pinStart,hostOf:id=>hostOf(id),nodeAction,onChange:()=>{ relations?.render(); drawPinEdges(); if(!document.querySelector('.card.dragging')&&hostsResized()) renderMap(); }});
+inboxHub=setupInbox({board:canvas.parentElement,canvas,trigger:$('inboxBtn'),getMap:cur,getView:()=>view,canEdit:()=>ready&&!store.readOnly,onPlace:placeInboxEntry,onRemove:removeInboxEntry});
+gallery=setupGallery({trigger:null,uid,toast,canEdit:()=>!!cur()&&!store.readOnly,
+  getSelection:()=>{const image=assets?.selection();if(image) return image;const card=cards?.focused();if(card?.type==='image') return card;if(card?.type==='character') {const stage=characterStage(card,characterProgress(card,characterSourceCards(card,cur(),inWorkspace([...maps.values()]))).level);return {src:stage.src,title:stage.name};}return null;},
+  addToCanvas:image=>{const w=Math.min(360,image.width),h=w*image.height/image.width;const r=canvas.getBoundingClientRect();assets.paste({id:uid('img'),src:image.src,w,h},{x:(r.width/2-view.x)/view.k,y:(r.height/2-view.y)/view.k});}
+});
+characterHub=setupCharactersPage({app,trigger:$('charactersBtn'),getMaps:()=>inWorkspace([...maps.values()]),uid,toast,canEdit:()=>ready&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{galleryPage?.hide();notesHub?.hide();},
+  onEdit:(mapId,id)=>{characterHub.hide();goto(mapId);cards.editCharacterStages(id);characterHub.show();},
+  onLocate:(mapId,id)=>{goto(mapId);const box=cards.focusCharacter(id);if(box){view.x=canvas.clientWidth/2-(box.x+box.w/2)*view.k;view.y=canvas.clientHeight/2-(box.y+box.h/2)*view.k;applyView();}},
+  onCreate:preset=>{characterHub.hide();if(!cur())createMap(false);const id=cards.createCharacterFromPreset(preset);if(id){characterHub.show();cards.editCharacterStages(id);}}
+});
+galleryPage=setupGalleryPage({app,trigger:$('galleryBtn'),uid,toast,canUse:()=>!!cur()&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{if(editingId)commitEdit();cards?.commit();characterHub?.hide();notesHub?.hide();},
+  getSelection:()=>{const image=assets?.selection();if(image)return image;const card=cards?.focused();if(card?.type==='image')return card;if(card?.type==='character'){const stage=characterStage(card,characterProgress(card,characterSourceCards(card,cur(),inWorkspace([...maps.values()]))).level);return {src:stage.src,title:stage.name};}return null;},
+  onUse:image=>{const w=Math.min(360,image.width),h=w*image.height/image.width;assets.paste({id:uid('img'),src:image.src,w,h},{x:(canvas.clientWidth/2-view.x)/view.k,y:(canvas.clientHeight/2-view.y)/view.k});}
+});
+notesHub=setupNotesPage({app,trigger:$('notesBtn'),uid,toast,canEdit:()=>ready&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{if(editingId)commitEdit();cards?.commit();galleryPage?.hide();characterHub?.hide();},
+  getBacklinks:id=>{const result=[];for(const map of inWorkspace([...maps.values()])){const walk=list=>{for(const card of list||[]){if(card.noteIds?.includes(id))result.push({mapId:map.id,cardId:card.id,mapTitle:map.title,title:card.title||card.text?.slice(0,40)||(card.type==='character'?'角色卡':'關聯筆記卡'),type:card.type});walk(card.cards);}};walk(map.cards);}return result;},
+  onLocate:(mapId,id)=>{goto(mapId);const box=cards.focusCard(id);if(box){view.x=canvas.clientWidth/2-(box.x+box.w/2)*view.k;view.y=canvas.clientHeight/2-(box.y+box.h/2)*view.k;applyView();}},
+  onInsert:note=>{notesHub.hide();if(!cur())createMap(false);cards.insertLinkedNote(note);}
+});
+listen($('insertNoteBtn'),'click',async()=>{if(!cur()||store.readOnly||!ready)return toast('請先開啟一張可編輯的心智圖。');const map=cur();try{const ids=await notesHub.pick([],false);if(ids?.length&&cur()===map){const note=cachedNote(ids[0]);if(note)cards.insertLinkedNote(note);}}catch(error){toast(error.message||'無法插入關聯筆記');}});
+listen(window,'yozu-notes-changed',()=>cards?.render());
+listNotes(null).then(()=>cards?.render()).catch(()=>toast('筆記載入失敗，請重新開啟筆記專區。'));
+const workspaceMenu=setupWorkspaceMenu({trigger:$('workspaceBtn'),getWorkspaces:()=>workspaces,getActive:activeWorkspaceId,getCount:id=>inWorkspace([...maps.values()],id).length,canEdit:()=>ready&&!store.readOnly,onSwitch:switchWorkspace,toast,
+  onCreate:async name=>{const previous=workspaces,id=uid('workspace'),next=validateWorkspaces([...workspaces,{id,name,createdAt:Date.now()}]);workspaces=persistWorkspaceState(next);if(!await saveFolders()){workspaces=persistWorkspaceState(previous);throw new Error('工作區儲存失敗，請重試。');}switchWorkspace(id);toast('已建立工作區');},
+  onRename:async(id,name)=>{const previous=workspaces;workspaces=persistWorkspaceState(workspaces.map(item=>item.id===id?{...item,name}:item));if(!await saveFolders()){workspaces=persistWorkspaceState(previous);throw new Error('工作區名稱儲存失敗，請重試。');}renderSidebar();toast('工作區名稱已更新');}
+});
 init();
 
 // Remove everything this run drew so a hot reload or remount starts from a clean canvas.
-return () => { for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; edgeLabels.remove(); groupLayer.remove(); pinEdges.remove(); nodeGrip.remove(); hideBar(); ghost?.remove(); draw?.destroy(); relations?.destroy(); cards?.destroy(); assets?.destroy(); disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
+return () => { for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; edgeLabels.remove(); groupLayer.remove(); pinEdges.remove(); nodeGrip.remove(); hideBar(); ghost?.remove(); workspaceMenu?.destroy(); inboxHub?.destroy(); notesHub?.destroy(); galleryPage?.destroy(); characterHub?.destroy(); gallery.destroy(); draw?.destroy(); relations?.destroy(); cards?.destroy(); assets?.destroy(); disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
 }

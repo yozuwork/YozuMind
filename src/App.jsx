@@ -5,7 +5,7 @@ import { RAIL_TOOLS } from './cards.js';
 function Sidebar() { return (<aside className="side" id="side" aria-label="心智圖列表">
     <div className="ws">
       <div className="ws-mark">Y</div>
-      <div className="ws-name">YoZu 心智圖</div>
+      <button className="ws-name workspace-trigger" id="workspaceBtn" title="切換或管理工作區" aria-haspopup="dialog"><span id="workspaceName">我的工作區</span><i className="bi bi-chevron-down" aria-hidden="true" /></button>
       <button className="icon-btn" id="closeSide" title="收起側欄" aria-label="收起側欄">
         <i className="bi bi-chevron-double-left" aria-hidden="true"></i>
       </button>
@@ -22,14 +22,39 @@ function Sidebar() { return (<aside className="side" id="side" aria-label="心�
       <i className="bi bi-folder-plus" aria-hidden="true"></i>
       新增資料夾
     </button>
-    <div className="sec"><span>心智圖</span><span id="count"></span></div>
+    <button className="side-act" id="galleryBtn" title="收藏圖片，隨時加入心智圖">
+      <i className="bi bi-images" aria-hidden="true"></i>
+      圖庫
+    </button>
+    <button className="side-act" id="charactersBtn" title="所有角色、成長階段與常用階段"><i className="bi bi-person-badge" aria-hidden="true"></i>角色專區</button>
+    <button className="side-act" id="notesBtn" title="記錄想法與管理關聯筆記"><i className="bi bi-journal-text" aria-hidden="true" />筆記專區</button>
+    <section className="daily-area" id="dailyArea" aria-label="每日心智圖">
+      <button className="daily-open" id="dailyOpen"><i className="bi bi-calendar3" aria-hidden="true"></i><span>每日心智圖</span><span className="daily-count" id="dailyCount"></span></button>
+      <div id="dailyControls" hidden>
+      <button className="daily-back" id="dailyBack"><i className="bi bi-arrow-left" aria-hidden="true"></i> 返回一般心智圖</button>
+      <div className="daily-date-nav">
+        <button className="icon-btn" id="dailyPrev" title="前一天" aria-label="前一天"><i className="bi bi-chevron-left" aria-hidden="true"></i></button>
+        <input type="date" id="dailyDate" min="0001-01-01" max="9999-12-31" aria-label="每日心智圖日期" />
+        <button className="icon-btn" id="dailyNext" title="後一天" aria-label="後一天"><i className="bi bi-chevron-right" aria-hidden="true"></i></button>
+        <button className="daily-today" id="dailyToday">今天</button>
+      </div>
+      <p className="daily-status" id="dailyStatus"></p>
+      <select className="daily-saved" id="dailySaved" aria-label="已儲存的每日心智圖"><option value="">已儲存的日期</option></select>
+      </div>
+    </section>
+    <div className="sec" id="regularHeading"><span>心智圖</span><span id="count"></span></div>
     <div className="pages" id="pages"></div>
+    <div className="daily-content" id="dailyContent" hidden>
+      <div className="sec">當日心智圖</div><div id="dailyPages"></div>
+      <div className="sec">關聯到這一天</div><div id="dailyLinks"></div>
+    </div>
     <div className="file-actions" aria-label="檔案管理">
-      <button className="side-act" id="importBtn"><i className="bi bi-folder2-open" aria-hidden="true"></i>匯入 JSON 存檔</button>
-      <button className="side-act" id="exportBtn"><i className="bi bi-download" aria-hidden="true"></i>匯出目前心智圖</button>
-      <button className="side-act" id="exportAllBtn"><i className="bi bi-archive" aria-hidden="true"></i>備份全部心智圖</button>
-      <input id="importFile" type="file" accept=".json,application/json" hidden />
+      <button className="side-act" id="importBtn" title="匯入 ZIP 存檔或舊版 JSON，保留現有資料"><i className="bi bi-folder2-open" aria-hidden="true"></i>匯入存檔</button>
+      <button className="side-act" id="exportBtn" title="選擇要匯出的工作區與內容"><i className="bi bi-download" aria-hidden="true"></i>匯出存檔</button>
+      <button className="side-act" id="exportAllBtn" title="將所有工作區與完整內容打包成 ZIP"><i className="bi bi-archive" aria-hidden="true"></i>備份所有工作區</button>
+      <input id="importFile" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" hidden />
       <p>編輯自動暫存於此瀏覽器</p>
+      <p>ZIP 包含圖片、文件、圖庫、筆記與關聯紀錄，可在其他裝置直接匯入。</p>
     </div>
     <div className="side-foot"><span className="dotst" id="stDot"></span><span id="stText">載入中…</span></div>
   </aside>); }
@@ -64,12 +89,15 @@ function Toolbar() { return (<header className="topbar">
 // Shown over the tool rail while a note (card or note-style node) is selected.
 function NoteRail() { return (<nav className="toolrail ctx-rail" id="ctxRail" aria-label="筆記工具" hidden>
       <button className="ctx-back" data-ctx="back" title="返回工具列 (Esc)" aria-label="返回工具列"><i className="bi bi-arrow-left" aria-hidden="true"></i></button>
-      {[['title','標題','type-h1'],['color','顏色','palette'],['smaller','縮小文字','fonts'],['bigger','放大文字','fonts'],['todo','待辦','check2-square'],['code','程式碼','code-slash'],['delete','刪除','trash']].map(([k,label,ic]) => (
+      {[['title','標題','type-h1'],['color','顏色','palette'],['smaller','縮小文字','fonts'],['bigger','放大文字','fonts'],['todo','待辦','check2-square'],['code','程式碼','code-slash'],['rename','角色名稱','person-badge'],['image','加入圖片','image'],['removeImage','移除圖片','image-fill'],['links','連動清單','list-check'],['delete','刪除','trash']].map(([k,label,ic]) => (
         <button className="rail-tool" data-ctx={k} key={k} title={label}>
           <span className="rail-icon"><i className={`bi bi-${ic}${k==='smaller'?' fs-small':''}`} aria-hidden="true"></i></span>
           <span className="rail-label">{label}</span>
         </button>
       ))}
+      <button className="rail-tool" data-ctx="stages" title="階段設定" hidden><span className="rail-icon"><i className="bi bi-layers" aria-hidden="true" /></span><span className="rail-label">階段設定</span></button>
+      <button className="rail-tool" data-ctx="notes" title="關聯筆記"><span className="rail-icon"><i className="bi bi-journal-arrow-up" aria-hidden="true" /></span><span className="rail-label">關聯筆記</span></button>
+      <div className="character-rail-info" id="characterRailInfo" hidden />
     </nav>); }
 function ToolRail() { return (<nav className="toolrail" id="toolrail" aria-label="卡片工具">
       {RAIL_TOOLS.map(([type, label, icon]) => (
@@ -78,6 +106,9 @@ function ToolRail() { return (<nav className="toolrail" id="toolrail" aria-label
           <span className="rail-label">{label}</span>
         </button>
       ))}
+      <button className="rail-tool" id="insertNoteBtn" title="插入關聯筆記"><span className="rail-icon"><i className="bi bi-journal-arrow-down" aria-hidden="true" /></span><span className="rail-label">關聯筆記</span></button>
+      <button className="rail-tool" id="inboxBtn" title="這張心智圖的暫存區" aria-expanded="false"><span className="rail-icon"><i className="bi bi-inbox" aria-hidden="true" /><span className="inbox-count" hidden /></span><span className="rail-label">暫存區</span></button>
+      <button className="rail-tool" id="arrangeBtn" title="一鍵排列：從左上角整齊排列畫布物件，可復原"><span className="rail-icon"><i className="bi bi-grid-3x3-gap" aria-hidden="true" /></span><span className="rail-label">一鍵排列</span></button>
       <button className="rail-tool" id="drawBtn" title="塗鴉：筆、螢光筆、橡皮擦與套索">
         <span className="rail-icon"><i className="bi bi-pencil" aria-hidden="true"></i></span>
         <span className="rail-label">塗鴉</span>
@@ -137,6 +168,7 @@ function Canvas() { return (<div className="canvas" id="canvas" tabIndex="0" ari
       </div>
       <div className="zoombar">
         <button id="zOut" title="縮小" aria-label="縮小"><i className="bi bi-dash-lg" aria-hidden="true"></i></button>
+        <input id="zRange" className="zoom-range" type="range" min="20" max="250" step="1" defaultValue="100" aria-label="畫布縮放比例" aria-valuetext="100%" />
         <button id="zLabel" className="zl" title="重設為 100%">100%</button>
         <button id="zIn" title="放大" aria-label="放大"><i className="bi bi-plus-lg" aria-hidden="true"></i></button>
         <button id="zFit" title="置中整張圖" aria-label="置中整張圖">
@@ -189,8 +221,15 @@ export default function App() {
 <div className="pop" id="pageMenu" role="menu">
   <button className="mi" data-m="rename"><i className="bi bi-pencil" aria-hidden="true"></i>重新命名</button>
   <button className="mi" data-m="move"><i className="bi bi-folder-symlink" aria-hidden="true"></i>移到資料夾</button>
+  <button className="mi" data-m="dailyLink"><i className="bi bi-calendar-plus" aria-hidden="true"></i>關聯到日期</button>
   <button className="mi" data-m="dup"><i className="bi bi-copy" aria-hidden="true"></i>建立副本</button>
   <button className="mi danger" data-m="del"><i className="bi bi-trash" aria-hidden="true"></i>刪除</button>
+</div>
+<div className="pop daily-link-pop" id="dailyLinkPop">
+  <label htmlFor="mapLinkDate">關聯到每日心智圖</label>
+  <input type="date" id="mapLinkDate" min="0001-01-01" max="9999-12-31" />
+  <button className="mi" id="addMapDate">＋ 加入關聯日期</button>
+  <div id="mapLinkedDates"></div>
 </div>
 <div className="pop" id="folderMenu" role="menu">
   <button className="mi" data-f="rename"><i className="bi bi-pencil" aria-hidden="true"></i>重新命名</button>
