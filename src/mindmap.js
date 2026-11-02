@@ -1,3 +1,8 @@
+import {canvasLayers,reorderLayer} from './layers.js';
+import {setupLayers} from './layers-panel.js';
+import {sectionOfFolder,sectionFolders} from './sections.js';
+import {setupSectionsPage} from './sections-page.js';
+import {setupFolderPage} from './folder-page.js';
 import { parseAttachments, parseFolders, parseMaps } from './files.js';
 import { blobToDataUrl, dataUrlToBlob, fileKind, getFile, putFile, deleteFile,MAX_ATTACHMENT_BYTES } from './attachments.js';
 import { setupCanvasAssets,readImageFile,imagePlacement } from './canvas-assets.js';
@@ -45,6 +50,7 @@ const nodebar=$('nodebar');
 const store = { mode:'loading', db:null, readOnly:false };
 const maps = new Map();
 let selectedDailyDate=todayDate();
+let selectedSection=null;
 let lastRegularId=null;
 let folders = [];
 let currentId=null, selectedId=null, editingId=null, editOrig='', editFresh=false;
@@ -54,7 +60,7 @@ const els=new Map();
 const undoS=new Map(), redoS=new Map();
 const mcache=new Map();
 let ready=false;
-let assets=null, cards=null, relations=null, draw=null, gallery=null, characterHub=null, galleryPage=null,notesHub=null,inboxHub=null;
+let assets=null, cards=null, relations=null, draw=null, gallery=null, characterHub=null, galleryPage=null,notesHub=null,inboxHub=null,folderHub=null,sectionsHub=null,layersHub=null;
 
 function ensureKnownWorkspaces() {
   const known=new Set(workspaces.map(item=>item.id));
@@ -65,6 +71,7 @@ function ensureKnownWorkspaces() {
 function switchWorkspace(id) {
   if(!workspaces.some(item=>item.id===id)) throw new Error('找不到這個工作區。');
   if(id===activeWorkspaceId()) return;
+  folderHub?.hide();sectionsHub?.hide();selectedSection=null;
   if(editingId)commitEdit();cards?.commit();
   if(currentId)lastWorkspaceMap.set(activeWorkspaceId(),currentId);
   const showCharacters=characterHub?.isOpen(),showGallery=galleryPage?.isOpen(),showNotes=notesHub?.isOpen();characterHub?.hide();galleryPage?.hide();notesHub?.hide();
@@ -92,7 +99,7 @@ function lsSaveAll(){
 // Folders may nest via parentId; missing parents and cycles fall back to the top level.
 function cleanFolders(list){
   const out=(Array.isArray(list)?list:[]).filter(f=>f&&typeof f.id==='string'&&typeof f.name==='string').map(f=>({id:f.id,name:f.name,open:f.open!==false,createdAt:+f.createdAt||0,workspaceId:workspaceOf(f),
-    ...(typeof f.parentId==='string'?{parentId:f.parentId}:{}), ...(FOLDER_COLORS[f.color]?{color:f.color}:{})}));
+    ...(f.kind==='section'?{kind:'section'}:typeof f.parentId==='string'?{parentId:f.parentId}:{}), ...(FOLDER_COLORS[f.color]?{color:f.color}:{})}));
   const byId=new Map(out.map(f=>[f.id,f]));
   for(const f of out){ const seen=new Set([f.id]); for(let p=f.parentId; p; p=byId.get(p).parentId){ if(!byId.has(p)||workspaceOf(byId.get(p))!==workspaceOf(f)||seen.has(p)){ delete f.parentId; break; } seen.add(p); } }
   return out;
@@ -106,6 +113,7 @@ async function saveFolders(){
 const pending=new Map(), inflight=new Set(), again=new Set(), myRevs=new Set(), retried=new Set();
 function isBusy(id){ return pending.has(id)||inflight.has(id); }
 function save(id, immediate){
+  layersHub?.refresh();
   inboxHub?.render();
   characterHub?.render();
   if(store.readOnly) return;
@@ -294,6 +302,7 @@ function doLayout(){
 
 /* ---------------- render ---------------- */
 function renderMap(){
+  layersHub?.refresh();
   inboxHub?.render();
   const m=cur();
   updateEmpty();
@@ -473,6 +482,7 @@ function drawEdges(){
   assets?.render(); relations?.render();
 }
 function applyView(){
+  placeLayerOutline();
   world.style.transform=`translate(${view.x}px,${view.y}px) scale(${view.k})`;
   const g=12*view.k;
   canvas.style.backgroundSize=`${g}px ${g}px`;
@@ -844,7 +854,7 @@ function nav(key){
   return true;
 }
 listen(document, 'keydown', e=>{
-  if(editingId) return;
+  if(editingId||folderHub?.isOpen()||sectionsHub?.isOpen()) return;
   const tg=e.target; if(tg && (tg.tagName==='INPUT'||tg.tagName==='TEXTAREA'||tg.isContentEditable)) return;
   const mod=e.metaKey||e.ctrlKey;
   if(e.key==='Escape'){ closePops(); if(selectedId){ selectedId=null; renderMap(); } return; }
@@ -1477,7 +1487,7 @@ function pageRow(m, folderId, depth, out, seen=new Set()){
   const kids=out&&!seen.has(m.id) ? subPagesOf(m) : [], open=kids.length>0&&openPages.has(m.id);
   seen.add(m.id);
   const hiddenCurrent=kids.length&&!open&&containsPage(m,currentId);
-  const row=document.createElement('div'); row.className='page'+(m.id===currentId||hiddenCurrent?' active':'')+(depth?' nested':'')+(isSubPage(m)?' subpage':'')+(kids.length?' has-pages':'')+(open?' open':''); row.dataset.id=m.id; row.tabIndex=0; row.setAttribute('role','button');
+  const row=document.createElement('div'); row.className='page'+(!folderHub?.isOpen()&&(m.id===currentId||hiddenCurrent)?' active':'')+(depth?' nested':'')+(isSubPage(m)?' subpage':'')+(kids.length?' has-pages':'')+(open?' open':''); row.dataset.id=m.id; row.tabIndex=0; row.setAttribute('role','button');
   if(folderId) row.dataset.folder=folderId;
   if(depth) row.style.setProperty('--depth',depth);
   row.draggable=!store.readOnly&&!isSubPage(m)&&!m.dailyDate;
@@ -1493,7 +1503,7 @@ function pageRow(m, folderId, depth, out, seen=new Set()){
   return row;
 }
 function folderRow(f, count, open, depth){
-  const row=document.createElement('div'); row.className='folder-row'+(open?' open':''); row.dataset.folder=f.id; row.tabIndex=0; row.setAttribute('role','button'); row.setAttribute('aria-expanded',String(open));
+  const row=document.createElement('div'); row.className='folder-row'+(open?' open':'')+(folderHub?.current()===f.id?' active':''); row.dataset.folder=f.id; row.tabIndex=0; row.setAttribute('role','button'); row.setAttribute('aria-expanded',String(open));
   row.style.setProperty('--depth',depth); row.draggable=!store.readOnly&&renamingFolder!==f.id;
   const chev=document.createElement('i'); chev.className='bi bi-chevron-right fchev'; chev.setAttribute('aria-hidden','true');
   const i=document.createElement('span'); i.className='pi'; i.innerHTML=folderIcon(f.color,18);
@@ -1505,18 +1515,22 @@ function folderRow(f, count, open, depth){
   if(!store.readOnly) row.appendChild(moreButton('資料夾選項',{folderMore:f.id}));
   return row;
 }
+function selectSection(id){
+  selectedSection=id&&folderById(id)?.kind==='section'?id:null;
+  $('search').value='';
+  renderSidebar();
+}
+function mapSection(m){return sectionOfFolder(maps.get(topPageOf(m.id))?.folderId,inWorkspace(folders));}
 function renderSidebar(){
+  if(ready&&selectedSection&&folderById(selectedSection)?.kind!=='section')selectedSection=null;
   $('workspaceName').textContent=workspaces.find(item=>item.id===activeWorkspaceId())?.name||'YoZu ???';
   $('workspaceBtn').disabled=!ready||[$('importBtn'),$('exportBtn')].some(button=>button.getAttribute('aria-busy')==='true');
   const q=$('search').value.trim().toLowerCase();
   const match=m=>!q||(m.title||'').toLowerCase().includes(q);
-  const all=sortedMaps().filter(m=>!maps.get(topPageOf(m.id))?.dailyDate && (!isSubPage(m)||(q&&match(m)))), known=new Set(folders.map(f=>f.id));
-  sidebarActive=topPageOf(currentId);
+  const all=sortedMaps().filter(m=>mapSection(m)===selectedSection&&!maps.get(topPageOf(m.id))?.dailyDate && (!isSubPage(m)||(q&&match(m)))), known=new Set(folders.map(f=>f.id));
+  sidebarActive=folderHub?.isOpen()?null:topPageOf(currentId);
   const box=$('pages'); box.innerHTML=''; let shown=0;
-  // Rebuild this small heading explicitly: React refreshes must not retain stale page rows here.
-  const heading=document.createElement('span'), count=document.createElement('span');
-  heading.textContent='心智圖'; count.id='count'; count.textContent=all.length?String(all.length):'';
-  $('regularHeading').replaceChildren(heading,count);
+  $('count').textContent=all.length?String(all.length):'';
   // Children are built first so a folder can be hidden when nothing inside matches the search.
   function addFolder(f, depth, out){
     const kids=document.createDocumentFragment(); let kidShown=0;
@@ -1532,8 +1546,8 @@ function renderSidebar(){
     if(!inside.length&&!childFolders(f.id).length){ const d=document.createElement('div'); d.className='folder-empty'; d.dataset.folder=f.id; d.style.setProperty('--depth',depth+1); d.textContent='把心智圖或資料夾拖進這裡'; out.appendChild(d); }
     return true;
   }
-  for(const f of childFolders(null)) if(addFolder(f,0,box)) shown++;
-  for(const m of all){ if(!known.has(m.folderId)&&match(m)){ if(q) box.appendChild(pageRow(m,null,0)); else pageRow(m,null,0,box); shown++; } }
+  for(const f of childFolders(selectedSection).filter(f=>f.kind!=='section')) if(addFolder(f,0,box)) shown++;
+  for(const m of all){ if((!known.has(m.folderId)||m.folderId===selectedSection)&&match(m)){ if(q) box.appendChild(pageRow(m,null,0)); else pageRow(m,null,0,box); shown++; } }
   if(!shown){
     const d=document.createElement('div'); d.className='no-pages';
     d.textContent = q ? '找不到符合的心智圖' : (ready ? '還沒有心智圖，按上方「新增心智圖」開始' : '');
@@ -1547,23 +1561,32 @@ function renderSidebar(){
   $('exportBtn').disabled=!ready||fileBusy;
   $('exportAllBtn').disabled=!ready||fileBusy;
   renderDailyArea();
+  folderHub?.refresh();
+  const sectionName=folderById(selectedSection)?.name||'一般分區';
+  $('sectionTag').textContent=sectionName;
+  $('sectionTag').title=`目前分區：${sectionName}`;
+  $('sectionsBtn').setAttribute('aria-label',`工作分區，目前分區：${sectionName}`);
+  $('sectionsBtn').disabled=!ready;
+  sectionsHub?.refresh();
 }
 function renderDailyArea(){
   const active=maps.get(topPageOf(currentId));
-  const dailyMode=validDailyDate(active?.dailyDate);
+  const dailyMode=!sectionsHub?.isOpen()&&!folderHub?.isOpen()&&validDailyDate(active?.dailyDate);
   app.classList.toggle('daily-mode',dailyMode);
   $('dailyControls').hidden=!dailyMode;
+  $('dailyBack').hidden=!dailyMode;
   $('dailyContent').hidden=!dailyMode;
   for(const id of ['newBtn','newFolderBtn','regularHeading','pages']) $(id).hidden=dailyMode;
   if(validDailyDate(active?.dailyDate)) selectedDailyDate=active.dailyDate;
-  $('dailyArea').classList.toggle('active',!!active?.dailyDate);
+  $('dailyArea').classList.toggle('active',dailyMode);
+  $('dailyOpen').setAttribute('aria-current',dailyMode ? 'page' : 'false');
+  const day=new Date(selectedDailyDate+'T12:00:00');
+  $('dailyWeekday').textContent=Number.isNaN(day.getTime())?'':new Intl.DateTimeFormat('zh-TW',{weekday:'long'}).format(day);
   $('dailyDate').value=selectedDailyDate;
-  const daily=sortedMaps().filter(m=>validDailyDate(m.dailyDate)), existing=daily.find(m=>m.dailyDate===selectedDailyDate);
+  const daily=sortedMaps().filter(m=>validDailyDate(m.dailyDate));
   $('dailyCount').textContent=daily.length?String(daily.length):'';
-  $('dailyStatus').textContent=existing ? `${selectedDailyDate} · 已儲存` : '選擇日期，開啟當天的獨立畫布';
-  for(const id of ['dailyOpen','dailyPrev','dailyNext','dailyToday','dailyDate','dailySaved']) $(id).disabled=!ready;
-  const options=[new Option('已儲存的日期',''),...daily.sort((a,b)=>b.dailyDate.localeCompare(a.dailyDate)).map(m=>new Option(m.dailyDate,m.id))];
-  $('dailySaved').replaceChildren(...options); $('dailySaved').value=existing?.id||'';
+  setStatus();
+  for(const id of ['dailyOpen','dailyPrev','dailyNext','dailyToday','dailyDate']) $(id).disabled=!ready;
   $('dailyPages').replaceChildren(); $('dailyLinks').replaceChildren();
   if(dailyMode){
     pageRow(active,null,0,$('dailyPages'));
@@ -1599,7 +1622,6 @@ listen($('dailyDate'),'change',()=>openDaily($('dailyDate').value));
 listen($('dailyPrev'),'click',()=>openDaily(shiftDailyDate(selectedDailyDate,-1)));
 listen($('dailyNext'),'click',()=>openDaily(shiftDailyDate(selectedDailyDate,1)));
 listen($('dailyToday'),'click',()=>openDaily(todayDate()));
-listen($('dailySaved'),'change',()=>{ const m=maps.get($('dailySaved').value); if(m?.dailyDate) openDaily(m.dailyDate); });
 listen($('pages'), 'click', e=>{
   const mb=e.target.closest('[data-more]');
   if(mb){ e.stopPropagation(); openPageMenu(mb.dataset.more, mb); return; }
@@ -1607,29 +1629,45 @@ listen($('pages'), 'click', e=>{
   if(fm){ e.stopPropagation(); folderFor=fm.dataset.folderMore; folderAnchor=fm; showPop($('folderMenu'), fm); return; }
   if(e.target.closest('[data-rename]')) return;
   const ex=e.target.closest('[data-expand]'); if(ex){ e.stopPropagation(); togglePageOpen(ex.dataset.expand); return; }
-  const fr=e.target.closest('.folder-row'); if(fr){ toggleFolder(fr.dataset.folder); return; }
+  const fr=e.target.closest('.folder-row'); if(fr){ if(e.target.closest('.fchev')) toggleFolder(fr.dataset.folder); else folderHub.show(fr.dataset.folder); return; }
   const row=e.target.closest('.page'); if(row) goto(row.dataset.id);
 });
 listen($('pages'), 'keydown', e=>{
   const input=e.target.closest('[data-rename]');
   if(input){ if(e.key==='Enter'){ e.preventDefault(); commitFolderName(input); } else if(e.key==='Escape'){ renamingFolder=null; renderSidebar(); } return; }
+  if((e.key==='ArrowRight'||e.key==='ArrowLeft')&&e.target.classList.contains('folder-row')){
+    const f=folderById(e.target.dataset.folder);
+    if(f&&f.open!==(e.key==='ArrowRight')){e.preventDefault();toggleFolder(f.id);}
+    return;
+  }
   if(e.key!=='Enter') return;
   if(e.target.classList.contains('page')) goto(e.target.dataset.id);
   if((e.key==='ArrowRight'||e.key==='ArrowLeft')&&e.target.classList.contains('has-pages')&&e.target.classList.contains('open')!==(e.key==='ArrowRight')) togglePageOpen(e.target.dataset.id);
-  else if(e.target.classList.contains('folder-row')) toggleFolder(e.target.dataset.folder);
+  else if(e.target.classList.contains('folder-row')) folderHub.show(e.target.dataset.folder);
 });
 listen($('pages'), 'focusout', e=>{ const input=e.target.closest?.('[data-rename]'); if(input) commitFolderName(input); });
 listen($('search'), 'input', renderSidebar);
-listen($('newBtn'), 'click', ()=>createMap(false));
-listen($('newFolderBtn'), 'click', ()=>createFolder());
+
+listen($('searchToggle'),'click',()=>{
+  const show=$('sidebarSearch').hidden;
+  $('sidebarSearch').hidden=!show;
+  $('searchToggle').setAttribute('aria-expanded',String(show));
+  if(show) $('search').focus(); else { $('search').value=''; renderSidebar(); }
+});
+listen($('search'),'keydown',e=>{if(e.key==='Escape'){ $('sidebarSearch').hidden=true; $('searchToggle').setAttribute('aria-expanded','false'); $('search').value='';renderSidebar();$('searchToggle').focus(); }});
+
+listen($('newBtn'), 'click', ()=>createMap(false,folderHub?.current()||selectedSection));
+listen($('newFolderBtn'), 'click', ()=>createFolder(null,folderHub?.current()||selectedSection));
 
 /* ---------------- folders ---------------- */
 function createFolder(moveId, parentId){
+  parentId=parentId||selectedSection;
   if(store.readOnly||!ready) return;
   const last=sortedFolders().pop(), f={id:uid('f'), workspaceId:activeWorkspaceId(), name:'新資料夾', open:true, createdAt:Math.max(Date.now(), (last?last.createdAt:0)+1)};
   if(folderById(parentId)){ f.parentId=parentId; openAncestors(parentId); }
   folders.push(f); saveFolders();
   if(moveId) setFolder(moveId, f.id, true);
+  $('search').value='';app.classList.remove('side-closed');
   renamingFolder=f.id; renderSidebar();
 }
 function commitFolderName(input){
@@ -1640,14 +1678,14 @@ function commitFolderName(input){
 }
 function toggleFolder(id){ const f=folderById(id); if(!f) return; f.open=!f.open; saveFolders(); renderSidebar(); }
 function setFolder(mapId, folderId, quiet){
-  const m=maps.get(mapId), f=folderById(folderId); if(!m||store.readOnly) return;
+  const m=maps.get(mapId), f=folderById(folderId==='__general__'?null:folderId||selectedSection); if(!m||store.readOnly) return;
   if((m.folderId||null)===(f?f.id:null)) return;
   if(f){ m.folderId=f.id; if(openAncestors(f.id)) saveFolders(); } else delete m.folderId;
   save(mapId,true); renderSidebar();
   if(!quiet) toast(f?`已移到「${f.name}」`:'已移出資料夾');
 }
 function setFolderParent(id, parentId, quiet){
-  const f=folderById(id), p=folderById(parentId); if(!f||store.readOnly) return;
+  const f=folderById(id), p=folderById(parentId==='__general__'?null:parentId||selectedSection); if(!f||store.readOnly) return;
   if(p&&isFolderInside(p.id,f.id)){ toast('不能把資料夾放進它自己裡面'); return; }
   if((f.parentId||null)===(p?p.id:null)) return;
   if(p){ f.parentId=p.id; openAncestors(p.id); } else delete f.parentId;
@@ -1787,9 +1825,11 @@ listen($('importFile'), 'change', async e=>{
   }
 });
 
-function createMap(sample){
+function createMap(sample,folderId){
   if(store.readOnly||!ready) return;
   const m=makeMap(sample);
+  folderId=folderId||selectedSection;
+  if(folderById(folderId)) m.folderId=folderId;
   const last=sortedMaps().pop(); if(last && m.createdAt<=last.createdAt) m.createdAt=last.createdAt+1;
   maps.set(m.id,m); save(m.id,true);
   goto(m.id);
@@ -1807,10 +1847,13 @@ function goto(id){
   if(isMobile()) app.classList.add('side-closed');
 }
 function openMap(id){
+  layerOutline.hidden=true;layerBox=null;
+  folderHub?.hide();sectionsHub?.hide();
   if(editingId) commitEdit();
   if(!maps.has(id)||workspaceOf(maps.get(id))!==activeWorkspaceId()) id=null;
   const changed=id!==currentId;
   currentId=id;
+  if(id&&!maps.get(topPageOf(id))?.dailyDate)selectedSection=mapSection(maps.get(id));
   if(id && !maps.get(topPageOf(id))?.dailyDate) lastRegularId=id;
   if(changed){ for(const el of els.values()) el.remove(); els.clear(); group=null; }
   const m=cur();
@@ -1897,6 +1940,7 @@ function openMovePop(kind, id, anchor){
   const current=kind==='map'?maps.get(id)?.folderId:folderById(id)?.parentId;
   const item=(to,html,label,on)=>{ const b=document.createElement('button'); b.className='mi'+(on?' on':''); b.dataset.to=to; b.innerHTML=html; b.append(label); pop.appendChild(b); };
   for(const f of folderTree()){ if(kind==='folder'&&isFolderInside(f.id,id)) continue; item(f.id, folderIcon(f.color), folderPath(f), current===f.id); }
+  if(selectedSection) item('__general__','<i class="bi bi-grid-1x2" aria-hidden="true"></i>','移到一般分區',false);
   if(current) item('', '<i class="bi bi-box-arrow-up-left" aria-hidden="true"></i>', kind==='map'?'移出資料夾':'移到最外層', false);
   if(kind==='map') item('new', '<i class="bi bi-folder-plus" aria-hidden="true"></i>', '新增資料夾並移入', false);
   if(!pop.children.length) item('', '<i class="bi bi-info-circle" aria-hidden="true"></i>', '沒有其他資料夾', false);
@@ -1921,7 +1965,7 @@ listen($('folderColorGrid'), 'click', e=>{
 listen($('folderMenu'), 'click', e=>{
   const b=e.target.closest('[data-f]'), f=folderById(folderFor); if(!b||!f) return; e.stopPropagation();
   const anchor=folderAnchor&&folderAnchor.isConnected?folderAnchor:$('folderMenu');
-  if(b.dataset.f==='rename'){ closePops(); renamingFolder=f.id; openAncestors(f.parentId); renderSidebar(); }
+  if(b.dataset.f==='rename'){ closePops(); renamingFolder=f.id; openAncestors(f.parentId); $('search').value='';app.classList.remove('side-closed');renderSidebar(); }
   else if(b.dataset.f==='sub'){ closePops(); createFolder(null, f.id); }
   else if(b.dataset.f==='move') openMovePop('folder', f.id, anchor);
   else if(b.dataset.f==='color'){
@@ -2088,6 +2132,35 @@ async function init(){
 }
 if(document.fonts && document.fonts.ready){ document.fonts.ready.then(()=>{ mcache.clear(); if(cur()) renderMap(); }); }
 // Images, top-level cards and drawings share one stacking order; the newest or last moved sits on top.
+const layerOutline=document.createElement('div');layerOutline.className='layer-selection-outline';layerOutline.hidden=true;layerOutline.setAttribute('aria-hidden','true');canvas.append(layerOutline);
+let layerBox=null;
+function placeLayerOutline(){
+  if(!layerBox||!layersHub?.isOpen()){layerOutline.hidden=true;return;}
+  layerOutline.hidden=false;
+  Object.assign(layerOutline.style,{left:(view.x+layerBox.x*view.k-3)+'px',top:(view.y+layerBox.y*view.k-3)+'px',width:(layerBox.w*view.k+6)+'px',height:(layerBox.h*view.k+6)+'px'});
+}
+listen(canvas,'pointerdown',()=>{layerBox=null;layerOutline.hidden=true;},true);
+function selectLayer(id,locate=false){
+  const entry=canvasLayers(cur()).find(e=>e.id===id);if(!entry)return;
+  if(editingId)commitEdit();cards?.commit();group=null;renderGroup();draw?.exit();clearNodeSelection();cards?.deselect();assets?.deselect();relations?.deselect();
+  buildIndex();
+  const nodeId=entry.kind==='node'?id:entry.value.anchor?.node;
+  if(nodeId){for(let info=idx.get(nodeId);info?.parent;info=idx.get(info.parent.id))delete info.parent.collapsed;}
+  renderMap();
+  let box;
+  if(entry.kind==='image')box=assets.focusImage(id);
+  else if(entry.kind==='card')box=cards.focusCard(id);
+  else if(entry.kind==='stroke')box=draw.focusStroke(id);
+  else {selectedId=id;renderMap();box=L.get(id);}
+  if(!box)return;
+  layerBox={x:box.x,y:box.y,w:box.w,h:box.h};
+  if(locate){
+    const usable=Math.max(100,canvas.clientWidth-($('layersPanel')?.offsetWidth||0)-24);
+    view.k=clamp(Math.min(view.k,(usable-32)/Math.max(box.w,1),(canvas.clientHeight-120)/Math.max(box.h,1)),.2,2.5);
+    view.x=usable/2-(box.x+box.w/2)*view.k;view.y=canvas.clientHeight/2-(box.y+box.h/2)*view.k;applyView();placeBar();
+  }
+  placeLayerOutline();layersHub?.refresh();
+}
 function nextZ(){ const m=cur(); let z=0; for(const o of [...(m?.images||[]),...(m?.cards||[]),...(m?.strokes||[])]) z=Math.max(z,o.z||0); return z+1; }
 function clearNodeSelection(){ if(editingId) commitEdit(); selectedId=null; for(const el of els.values()) el.classList.remove('sel'); hideBar(); }
 // Drawing goes first, then relations, so their capture-phase pointer handlers win over images and cards.
@@ -2096,20 +2169,66 @@ relations=setupRelations({canPin:r=>!!relationPin(r),pin:pinFromRelation,canvas,
 assets=setupCanvasAssets({stageImages:stageClipboardImages,receiveImages:(files,target)=>!!cards?.receiveImages(files,target),nextZ,canvas,world,getMap:cur,getView:()=>view,uid,snapshot,save,toast,canEdit:()=>!store.readOnly,clearNodeSelection:()=>{clearNodeSelection();cards?.deselect();relations?.deselect();},onChange:()=>{ relations?.render(); drawPinEdges(); },isHidden:id=>pinHidden.has(id),moved:objectMoved,pinStart,hoverDrop:(x,y)=>cards?.hoverDrop(x,y),dropImage:(x,y,image)=>!!cards?.dropImage(x,y,image)});
 cards=setupCards({getMaps:()=>inWorkspace([...maps.values()]),locateTodo:locateTodoCard,getNote:cachedNote,openNote:id=>{if(cachedNote(id))notesHub.show(id);else toast('這篇筆記已刪除或不在目前工作區，請重新設定關聯。');},chooseGallery:onSelect=>gallery?.pick(onSelect),createPage,pageInfo,openPage:id=>goto(id),viewPage:id=>{ if(editingId) commitEdit(); openViewer(id); },renamePage,pagesChanged:()=>renderSidebar(),nextZ,canvas,world,rail:$('toolrail'),getMap:cur,getView:()=>view,uid,snapshot,dropSnapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();assets?.deselect();relations?.deselect();},hasNodeSelection:()=>!!selectedId,createTree,isHidden:id=>pinHidden.has(id),moved:objectMoved,pinStart,hostOf:id=>hostOf(id),nodeAction,onChange:()=>{ relations?.render(); drawPinEdges(); if(!document.querySelector('.card.dragging')&&hostsResized()) renderMap(); }});
 inboxHub=setupInbox({board:canvas.parentElement,canvas,trigger:$('inboxBtn'),getMap:cur,getView:()=>view,canEdit:()=>ready&&!store.readOnly,onPlace:placeInboxEntry,onRemove:removeInboxEntry});
+layersHub=setupLayers({
+  board:canvas.parentElement,trigger:$('layersBtn'),getMap:cur,
+  getSelected:()=>cards?.selection()?.id||assets?.selection()?.id||draw?.selection()?.[0]?.id||selectedId,
+  canEdit:()=>ready&&!store.readOnly,onSelect:id=>selectLayer(id),onLocate:id=>selectLayer(id,true),
+  onOrder:(id,direction)=>{const m=cur();if(!m||store.readOnly||!canvasLayers(m).some(e=>e.id===id&&e.reorder))return;cards?.commit();snapshot();reorderLayer(m,id,direction);save(m.id);draw?.render(true);renderMap();},
+  beforeOpen:()=>{inboxHub?.close();if(isMobile())app.classList.add('side-closed');},
+  onHide:()=>{layerBox=null;layerOutline.hidden=true;}
+});
+listen($('inboxBtn'),'click',()=>layersHub.hide());
 gallery=setupGallery({trigger:null,uid,toast,canEdit:()=>!!cur()&&!store.readOnly,
   getSelection:()=>{const image=assets?.selection();if(image) return image;const card=cards?.focused();if(card?.type==='image') return card;if(card?.type==='character') {const stage=characterStage(card,characterProgress(card,characterSourceCards(card,cur(),inWorkspace([...maps.values()]))).level);return {src:stage.src,title:stage.name};}return null;},
   addToCanvas:image=>{const w=Math.min(360,image.width),h=w*image.height/image.width;const r=canvas.getBoundingClientRect();assets.paste({id:uid('img'),src:image.src,w,h},{x:(r.width/2-view.x)/view.k,y:(r.height/2-view.y)/view.k});}
 });
-characterHub=setupCharactersPage({app,trigger:$('charactersBtn'),getMaps:()=>inWorkspace([...maps.values()]),uid,toast,canEdit:()=>ready&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{galleryPage?.hide();notesHub?.hide();},
+sectionsHub=setupSectionsPage({
+  app,trigger:$('sectionsBtn'),getSections:()=>sortedFolders().filter(f=>f.kind==='section'),
+  getSelected:()=>selectedSection,select:selectSection,
+  getWorkspace:()=>workspaces.find(w=>w.id===activeWorkspaceId())?.name||'',
+  getContent:id=>{
+    const items=sortedMaps().filter(m=>!isSubPage(m)&&!m.dailyDate&&mapSection(m)===(id||null));
+    return {total:items.length,maps:items.filter(m=>(m.folderId||null)===(id||null)||!folderById(m.folderId)),
+      folders:sectionFolders(inWorkspace(folders),id).filter(f=>(f.parentId||null)===(id||null)||!folderById(f.parentId))};
+  },
+  canEdit:()=>ready&&!store.readOnly,
+  create:async name=>{
+    if(!ready||store.readOnly)return false;
+    const f={id:uid('section'),kind:'section',name,workspaceId:activeWorkspaceId(),open:true,createdAt:Date.now()};
+    folders.push(f);
+    if(!await saveFolders()){folders=folders.filter(x=>x!==f);return false;}
+    return f.id;
+  },
+  rename:async(id,name)=>{const f=folderById(id);if(!f||store.readOnly)return false;const old=f.name;f.name=name;if(!await saveFolders()){f.name=old;return false;}renderSidebar();},
+  createMap:()=>createMap(false,selectedSection),createFolder:()=>createFolder(null,selectedSection),
+  openMap:goto,openFolder:id=>folderHub.show(id),
+  beforeOpen:()=>{if(editingId)commitEdit();cards?.commit();folderHub?.hide();characterHub?.hide();galleryPage?.hide();notesHub?.hide();closePops();},
+  onChange:()=>{renderSidebar();if(isMobile())app.classList.add('side-closed');},
+  onClose:()=>openMap(currentId),toggleSidebar:()=>app.classList.toggle('side-closed')
+});
+folderHub=setupFolderPage({
+  app,getFolder:folderById,getFolders:childFolders,
+  getMaps:id=>sortedMaps().filter(m=>m.folderId===id&&!isSubPage(m)&&!m.dailyDate),
+  canEdit:()=>ready&&!store.readOnly,
+  beforeOpen:()=>{sectionsHub?.hide();if(editingId)commitEdit();cards?.commit();characterHub?.hide();galleryPage?.hide();notesHub?.hide();closePops();},
+  onChange:()=>{selectedSection=sectionOfFolder(folderHub.current(),inWorkspace(folders));renderSidebar();if(isMobile())app.classList.add('side-closed');},
+  onClose:()=>openMap(currentId),onCreateMap:id=>createMap(false,id),
+  onCreateFolder:id=>{createFolder(null,id);app.classList.remove('side-closed');},
+  onRename:(id,name)=>{const f=folderById(id);if(f&&!store.readOnly){f.name=name;saveFolders();renderSidebar();}},
+  onMenu:(id,anchor)=>{folderFor=id;folderAnchor=anchor;showPop($('folderMenu'),anchor);},
+  onSection:id=>{selectSection(id);sectionsHub.show(true);},
+  onOpenMap:goto,toggleSidebar:()=>app.classList.toggle('side-closed')
+});
+characterHub=setupCharactersPage({app,trigger:$('charactersBtn'),getMaps:()=>inWorkspace([...maps.values()]),uid,toast,canEdit:()=>ready&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{sectionsHub?.hide();folderHub?.hide();renderDailyArea();galleryPage?.hide();notesHub?.hide();},
   onEdit:(mapId,id)=>{characterHub.hide();goto(mapId);cards.editCharacterStages(id);characterHub.show();},
   onLocate:(mapId,id)=>{goto(mapId);const box=cards.focusCharacter(id);if(box){view.x=canvas.clientWidth/2-(box.x+box.w/2)*view.k;view.y=canvas.clientHeight/2-(box.y+box.h/2)*view.k;applyView();}},
   onCreate:preset=>{characterHub.hide();if(!cur())createMap(false);const id=cards.createCharacterFromPreset(preset);if(id){characterHub.show();cards.editCharacterStages(id);}}
 });
-galleryPage=setupGalleryPage({app,trigger:$('galleryBtn'),uid,toast,canUse:()=>!!cur()&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{if(editingId)commitEdit();cards?.commit();characterHub?.hide();notesHub?.hide();},
+galleryPage=setupGalleryPage({app,trigger:$('galleryBtn'),uid,toast,canUse:()=>!!cur()&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{sectionsHub?.hide();folderHub?.hide();renderDailyArea();if(editingId)commitEdit();cards?.commit();characterHub?.hide();notesHub?.hide();},
   getSelection:()=>{const image=assets?.selection();if(image)return image;const card=cards?.focused();if(card?.type==='image')return card;if(card?.type==='character'){const stage=characterStage(card,characterProgress(card,characterSourceCards(card,cur(),inWorkspace([...maps.values()]))).level);return {src:stage.src,title:stage.name};}return null;},
   onUse:image=>{const w=Math.min(360,image.width),h=w*image.height/image.width;assets.paste({id:uid('img'),src:image.src,w,h},{x:(canvas.clientWidth/2-view.x)/view.k,y:(canvas.clientHeight/2-view.y)/view.k});}
 });
-notesHub=setupNotesPage({app,trigger:$('notesBtn'),uid,toast,canEdit:()=>ready&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{if(editingId)commitEdit();cards?.commit();galleryPage?.hide();characterHub?.hide();},
+notesHub=setupNotesPage({app,trigger:$('notesBtn'),uid,toast,canEdit:()=>ready&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{sectionsHub?.hide();folderHub?.hide();renderDailyArea();if(editingId)commitEdit();cards?.commit();galleryPage?.hide();characterHub?.hide();},
   getBacklinks:id=>{const result=[];for(const map of inWorkspace([...maps.values()])){const walk=list=>{for(const card of list||[]){if(card.noteIds?.includes(id))result.push({mapId:map.id,cardId:card.id,mapTitle:map.title,title:card.title||card.text?.slice(0,40)||(card.type==='character'?'角色卡':'關聯筆記卡'),type:card.type});walk(card.cards);}};walk(map.cards);}return result;},
   onLocate:(mapId,id)=>{goto(mapId);const box=cards.focusCard(id);if(box){view.x=canvas.clientWidth/2-(box.x+box.w/2)*view.k;view.y=canvas.clientHeight/2-(box.y+box.h/2)*view.k;applyView();}},
   onInsert:note=>{notesHub.hide();if(!cur())createMap(false);cards.insertLinkedNote(note);}
@@ -2124,5 +2243,5 @@ const workspaceMenu=setupWorkspaceMenu({trigger:$('workspaceBtn'),getWorkspaces:
 init();
 
 // Remove everything this run drew so a hot reload or remount starts from a clean canvas.
-return () => { for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; edgeLabels.remove(); groupLayer.remove(); pinEdges.remove(); nodeGrip.remove(); hideBar(); ghost?.remove(); workspaceMenu?.destroy(); inboxHub?.destroy(); notesHub?.destroy(); galleryPage?.destroy(); characterHub?.destroy(); gallery.destroy(); draw?.destroy(); relations?.destroy(); cards?.destroy(); assets?.destroy(); disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
+return () => { for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; edgeLabels.remove(); groupLayer.remove(); pinEdges.remove(); nodeGrip.remove(); hideBar(); ghost?.remove(); workspaceMenu?.destroy(); layersHub?.destroy();layerOutline.remove();sectionsHub?.destroy();folderHub?.destroy(); inboxHub?.destroy(); notesHub?.destroy(); galleryPage?.destroy(); characterHub?.destroy(); gallery.destroy(); draw?.destroy(); relations?.destroy(); cards?.destroy(); assets?.destroy(); disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
 }

@@ -129,5 +129,5 @@ export function setupCanvasAssets({ canvas, world, getMap, getView, uid, snapsho
     if(recordHistory)snapshot();Object.assign(image,{x:at.x-image.w/2,y:at.y-image.h/2,z:nextZ()});(map.images ||= []).push(image);
     clearNodeSelection();selected=image.id;save(map.id);render();onChange();
   }
-  return {render,paste,addFiles,selection:()=>selected&&(getMap()?.images||[]).find(i=>i.id===selected)||null,cut:deleteSelected,deselect:()=>{if(selected){selected=null;render();}},boxes:()=>(getMap()?.images||[]).filter(image=>!image.inbox),destroy:()=>{listeners.forEach(fn=>fn());layer.remove();panel.remove();}};
+  return {render,paste,addFiles,focusImage(id){const image=getMap()?.images?.find(i=>i.id===id&&!i.inbox);if(!image)return;clearNodeSelection();mapId=getMap().id;selected=id;render();return image;},selection:()=>selected&&(getMap()?.images||[]).find(i=>i.id===selected)||null,cut:deleteSelected,deselect:()=>{if(selected){selected=null;render();}},boxes:()=>(getMap()?.images||[]).filter(image=>!image.inbox),destroy:()=>{listeners.forEach(fn=>fn());layer.remove();panel.remove();}};
 }

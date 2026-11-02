@@ -287,6 +287,7 @@ export function setupDraw({ canvas, world, button, rail, getMap, getView, uid, s
   sync();
   return {
     render, place, exit,
+    focusStroke(id){const stroke=strokes().find(s=>s.id===id);if(!stroke)return;if(canEdit()){enter();tool='lasso';selected.clear();selected.add(id);sync();render(true);}return strokeBox(stroke);},
     selection() { return active && selected.size ? strokes().filter(s=>selected.has(s.id)) : []; },
     cut: deleteSelection,
     // Pasted strokes keep their shape; their bounding box is centred on `at`.

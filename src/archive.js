@@ -88,6 +88,6 @@ export async function readArchive(file) {
   const project=unpack(json('records/project.json')),gallery=validateGallery(unpack(json('records/gallery.json')));
   const stagePresets=Object.hasOwn(entries,'records/stage-presets.json')?validatePresets(unpack(json('records/stage-presets.json'))):[];
   const notes=Object.hasOwn(entries,'records/notes.json')?validateNotes(json('records/notes.json')):[];
-  if(project.format!=='yozumind'||project.version!==1||!Array.isArray(project.maps)||(!project.maps.length&&!gallery.length&&!stagePresets.length&&!workspaces.length&&!notes.length)) throw new Error('存檔沒有可還原的資料。');
+  if(project.format!=='yozumind'||project.version!==1||!Array.isArray(project.maps)||(!project.maps.length&&!project.folders?.length&&!gallery.length&&!stagePresets.length&&!workspaces.length&&!notes.length)) throw new Error('存檔沒有可還原的資料。');
   return {text:JSON.stringify(project),gallery,stagePresets,workspaces,notes,zip:true};
 }

@@ -10,39 +10,22 @@ function Sidebar() { return (<aside className="side" id="side" aria-label="心�
         <i className="bi bi-chevron-double-left" aria-hidden="true"></i>
       </button>
     </div>
-    <label className="search">
-      <i className="bi bi-search" aria-hidden="true"></i>
-      <input id="search" type="text" placeholder="搜尋心智圖" autoComplete="off" />
-    </label>
-    <button className="side-act" id="newBtn">
-      <i className="bi bi-plus-lg" aria-hidden="true"></i>
-      新增心智圖
-    </button>
-    <button className="side-act" id="newFolderBtn">
-      <i className="bi bi-folder-plus" aria-hidden="true"></i>
-      新增資料夾
-    </button>
     <button className="side-act" id="galleryBtn" title="收藏圖片，隨時加入心智圖">
       <i className="bi bi-images" aria-hidden="true"></i>
       圖庫
     </button>
     <button className="side-act" id="charactersBtn" title="所有角色、成長階段與常用階段"><i className="bi bi-person-badge" aria-hidden="true"></i>角色專區</button>
     <button className="side-act" id="notesBtn" title="記錄想法與管理關聯筆記"><i className="bi bi-journal-text" aria-hidden="true" />筆記專區</button>
-    <section className="daily-area" id="dailyArea" aria-label="每日心智圖">
-      <button className="daily-open" id="dailyOpen"><i className="bi bi-calendar3" aria-hidden="true"></i><span>每日心智圖</span><span className="daily-count" id="dailyCount"></span></button>
-      <div id="dailyControls" hidden>
-      <button className="daily-back" id="dailyBack"><i className="bi bi-arrow-left" aria-hidden="true"></i> 返回一般心智圖</button>
-      <div className="daily-date-nav">
-        <button className="icon-btn" id="dailyPrev" title="前一天" aria-label="前一天"><i className="bi bi-chevron-left" aria-hidden="true"></i></button>
-        <input type="date" id="dailyDate" min="0001-01-01" max="9999-12-31" aria-label="每日心智圖日期" />
-        <button className="icon-btn" id="dailyNext" title="後一天" aria-label="後一天"><i className="bi bi-chevron-right" aria-hidden="true"></i></button>
-        <button className="daily-today" id="dailyToday">今天</button>
-      </div>
-      <p className="daily-status" id="dailyStatus"></p>
-      <select className="daily-saved" id="dailySaved" aria-label="已儲存的每日心智圖"><option value="">已儲存的日期</option></select>
-      </div>
-    </section>
-    <div className="sec" id="regularHeading"><span>心智圖</span><span id="count"></span></div>
+    <div className="daily-area" id="dailyArea">
+      <button className="side-act daily-open" id="dailyOpen" title="開啟每日獨立畫布"><i className="bi bi-calendar3" aria-hidden="true" /><span>每日心智圖</span><span className="daily-count" id="dailyCount" /></button>
+    </div>
+    <button className="side-act" id="sectionsBtn" title="管理工作分區"><i className="bi bi-grid-1x2" aria-hidden="true" /><span className="section-nav-label">工作分區</span><span className="section-nav-tag" id="sectionTag">一般分區</span></button>
+    <div className="sec sidebar-library-heading" id="regularHeading"><span>心智圖</span><span id="count" /><div className="library-actions">
+      <button className="icon-btn" id="searchToggle" title="搜尋心智圖" aria-label="搜尋心智圖" aria-expanded="false" aria-controls="sidebarSearch"><i className="bi bi-search" /></button>
+      <button className="icon-btn" id="newBtn" title="新增心智圖" aria-label="新增心智圖"><i className="bi bi-plus-lg" /></button>
+      <button className="icon-btn" id="newFolderBtn" title="新增資料夾" aria-label="新增資料夾"><i className="bi bi-folder-plus" /></button>
+    </div></div>
+    <label className="search" id="sidebarSearch" hidden><i className="bi bi-search" aria-hidden="true" /><input id="search" type="text" placeholder="搜尋心智圖" autoComplete="off" /></label>
     <div className="pages" id="pages"></div>
     <div className="daily-content" id="dailyContent" hidden>
       <div className="sec">當日心智圖</div><div id="dailyPages"></div>
@@ -58,14 +41,31 @@ function Sidebar() { return (<aside className="side" id="side" aria-label="心�
     </div>
     <div className="side-foot"><span className="dotst" id="stDot"></span><span id="stText">載入中…</span></div>
   </aside>); }
+function DailyToolbar() { return (
+  <section className="daily-workspace-bar" id="dailyControls" aria-label="每日心智圖專區" hidden>
+    <div className="daily-heading">
+      <span className="daily-emblem" aria-hidden="true"><i className="bi bi-calendar3" /></span>
+      <h1>每日心智圖</h1>
+    </div>
+    <div className="daily-date-nav" role="group" aria-label="切換日期">
+      <button className="icon-btn" id="dailyPrev" title="前一天" aria-label="前一天"><i className="bi bi-chevron-left" aria-hidden="true" /></button>
+      <input type="date" id="dailyDate" min="0001-01-01" max="9999-12-31" aria-label="每日心智圖日期" />
+      <button className="icon-btn" id="dailyNext" title="後一天" aria-label="後一天"><i className="bi bi-chevron-right" aria-hidden="true" /></button>
+      <button className="daily-today" id="dailyToday">今天</button>
+    </div>
+    <span id="dailyWeekday" />
+  </section>
+); }
 function Toolbar() { return (<header className="topbar">
       <button className="icon-btn" id="openSide" title="打開側欄" aria-label="打開側欄">
         <i className="bi bi-list" aria-hidden="true"></i>
       </button>
+      <button className="icon-btn daily-return" id="dailyBack" title="返回一般心智圖" aria-label="返回一般心智圖" hidden><i className="bi bi-arrow-left" aria-hidden="true" /></button>
       <nav className="crumbs" id="crumbs" aria-label="頁面路徑" hidden></nav>
       <button className="crumb-icon" id="crumbIcon" title="更換便利貼顏色" aria-label="更換便利貼顏色"></button>
       <input className="title-input" id="title" type="text" placeholder="未命名心智圖" aria-label="心智圖名稱" />
       <span className="ro-badge" id="roBadge" hidden>唯讀</span>
+      <button className="icon-btn" id="layersBtn" title="圖層：選取被遮住的物件" aria-label="圖層" aria-expanded="false"><i className="bi bi-layers" aria-hidden="true" /></button>
       <div className="seg" role="group" aria-label="排列方向">
         <button id="layDown" title="向下展開">
           <i className="bi bi-diagram-3" aria-hidden="true"></i><span className="lbl">向下</span>
@@ -208,6 +208,7 @@ export default function App() {
 
   <main className="main">
     <Toolbar />
+    <DailyToolbar />
 
     <div className="board">
       <ToolRail />

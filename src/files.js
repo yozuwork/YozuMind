@@ -21,6 +21,7 @@ export function parseFolders(text) {
     .filter(f => f && typeof f.id === 'string' && f.id.length <= 100 && typeof f.name === 'string' && f.name.length <= 200)
     .map(f => ({ id: f.id, name: f.name, open: f.open !== false, createdAt: Number.isFinite(f.createdAt) ? f.createdAt : Date.now(),
       ...(typeof f.workspaceId==='string'&&f.workspaceId.length<=100?{workspaceId:f.workspaceId}:{}),
+      ...(f.kind==='section'?{kind:'section'}:{}),
       ...(typeof f.parentId === 'string' && f.parentId.length <= 100 ? { parentId: f.parentId } : {}),
       ...(FOLDER_COLORS.includes(f.color) ? { color: f.color } : {}) }));
 }
