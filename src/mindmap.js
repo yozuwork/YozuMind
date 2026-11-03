@@ -17,6 +17,7 @@ import { todayDate, validDailyDate, shiftDailyDate } from './daily.js';
 import { setupGallery, exportGalleryImages, importGalleryImages, removeGalleryImages } from './gallery.js';
 import {setupGalleryPage} from './gallery-page.js';
 import { createArchive, readArchive } from './archive.js';
+import {setupFolderBackup} from './folder-backup-ui.js';
 import { characterStage, characterProgress,characterSourceCards,characterSourceMaps,allCards } from './character.js';
 import {setupCharactersPage} from './characters-page.js';
 import {listStagePresets,importStagePresets,removeStagePresets} from './stage-presets.js';
@@ -60,6 +61,7 @@ const els=new Map();
 const undoS=new Map(), redoS=new Map();
 const mcache=new Map();
 let ready=false;
+let folderBackup=null;
 let assets=null, cards=null, relations=null, draw=null, gallery=null, characterHub=null, galleryPage=null,notesHub=null,inboxHub=null,folderHub=null,sectionsHub=null,layersHub=null;
 
 function ensureKnownWorkspaces() {
@@ -86,6 +88,7 @@ function switchWorkspace(id) {
 function lsLoad(){ try{ const a=JSON.parse(localStorage.getItem(LS_KEY)||'[]'); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
 let localSaveFailed = false;
 function lsSaveAll(){
+  folderBackup?.changed();
   try {
     localStorage.setItem(LS_KEY, JSON.stringify([...maps.values()]));
     localSaveFailed = false; setStatus(); return true;
@@ -106,6 +109,7 @@ function cleanFolders(list){
 }
 async function saveFolders(){
   if(store.readOnly) return;
+  folderBackup?.changed();
   if(store.mode==='cloud'){ try{ await store.db.doc('maps/'+FOLDER_DOC).set({folders:JSON.parse(JSON.stringify(folders)),workspaces});return true; }catch(e){ writeError(e);return false; } }
   try{ localStorage.setItem(FOLDER_KEY, JSON.stringify(folders));return true; }catch(e){ toast('瀏覽器暫存失敗，請立即匯出存檔，避免關閉後遺失。');return false; }
 }
@@ -118,6 +122,7 @@ function save(id, immediate){
   characterHub?.render();
   if(store.readOnly) return;
   const m=maps.get(id); if(!m) return;
+  folderBackup?.changed();
   m.updatedAt=Date.now();
   if(store.mode!=='cloud')return lsSaveAll();
   clearTimeout(pending.get(id));
@@ -140,6 +145,7 @@ async function flush(id){
   }
 }
 async function removeRemote(id){
+  folderBackup?.changed();
   if(store.mode!=='cloud'){ lsSaveAll(); return; }
   clearTimeout(pending.get(id)); pending.delete(id);
   try{ await store.db.doc('maps/'+id).delete(); }catch(e){ writeError(e); }
@@ -1728,6 +1734,17 @@ listen($('pages'), 'drop', e=>{
 });
 listen($('pages'), 'dragend', ()=>{ dragItem=null; clearDropMarks(); $('pages').querySelectorAll('.dragging').forEach(el=>el.classList.remove('dragging')); });
 
+async function portableArchive(selected,scope,workspaceId) {
+  await notesHub?.flush();
+  const used=new Set();for(const m of selected)for(let f=folderById(m.folderId),n=0;f&&n<500;f=folderById(f.parentId),n++)used.add(f.id);
+  const exportedFolders=structuredClone(scope==='all'?folders:scope==='current'?folders.filter(f=>used.has(f.id)):inWorkspace(folders,workspaceId));
+  const exportedWorkspaces=structuredClone(workspaces.filter(item=>scope==='all'||item.id===workspaceId));
+  const files={};
+  for(const m of selected)(function walk(list){for(const c of list||[]){if(c.type==='file'&&c.fileId)files[c.fileId]=null;walk(c.cards);}})(m.cards);
+  for(const id of Object.keys(files)){const blob=await getFile(id);if(!blob)throw new Error('有附件無法讀取，未產生不完整的備份。請重新加入遺失的附件後再匯出。');files[id]=await blobToDataUrl(blob);}
+  const library=await exportGalleryImages(scope==='all'?null:workspaceId),stagePresets=await listStagePresets(scope==='all'?null:workspaceId),notes=await listNotes(scope==='all'?null:workspaceId);
+  return createArchive({maps:selected,folders:exportedFolders,files,gallery:library,stagePresets,workspaces:exportedWorkspaces,notes});
+}
 async function exportFile(scope='workspace',workspaceId=activeWorkspaceId()) {
   if([$('exportBtn'),$('importBtn')].some(button=>button.getAttribute('aria-busy')==='true')) return;
   if(editingId) commitEdit();
@@ -1740,17 +1757,7 @@ async function exportFile(scope='workspace',workspaceId=activeWorkspaceId()) {
   exportButtons.forEach(b=>{b.disabled=true;b.setAttribute('aria-busy','true');});
   renderSidebar();toast('正在整理圖片與文件，建立 ZIP 存檔…');
   try {
-  await notesHub?.flush();
-  const used=new Set(); for(const m of selected) for(let f=folderById(m.folderId), n=0; f&&n<500; f=folderById(f.parentId), n++) used.add(f.id);
-  const exportedFolders=structuredClone(scope==='all'?folders:scope==='current'?folders.filter(f=>used.has(f.id)):inWorkspace(folders,workspaceId));
-  // Attached files travel inside the export so another browser can open them.
-  const files={};
-  for(const m of selected) (function walk(list){ for(const c of list||[]){ if(c.type==='file'&&c.fileId) files[c.fileId]=null; walk(c.cards); } })(m.cards);
-  for(const id of Object.keys(files)){ const b=await getFile(id); if(!b) throw new Error('有附件無法讀取，未產生不完整的備份。請重新加入遺失的附件後再匯出。'); files[id]=await blobToDataUrl(b); }
-  const library=await exportGalleryImages(scope==='all'?null:workspaceId),stagePresets=await listStagePresets(scope==='all'?null:workspaceId);
-  const exportedWorkspaces=workspaces.filter(item=>scope==='all'||item.id===workspaceId);
-  const notes=await listNotes(scope==='all'?null:workspaceId);
-  const archive=await createArchive({maps:selected,folders:exportedFolders,files,gallery:library,stagePresets,workspaces:exportedWorkspaces,notes});
+  const archive=await portableArchive(selected,scope,workspaceId);
   const blob = new Blob([archive], {type:'application/zip'});
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -1767,9 +1774,10 @@ async function exportFile(scope='workspace',workspaceId=activeWorkspaceId()) {
 async function chooseExport(all=false) {if(galleryPage?.isBusy()){toast('圖庫圖片處理中，請稍候再匯出。');return;}const choice=await chooseExportWorkspace(workspaces,activeWorkspaceId(),{all,hasMap:!!cur()});if(choice)await exportFile(choice.scope,choice.workspaceId);}
 listen($('exportBtn'), 'click', ()=>chooseExport());
 listen($('exportAllBtn'), 'click', ()=>chooseExport(true));
-listen($('importBtn'), 'click', ()=>{ $('importFile').value=''; $('importFile').click(); });
+listen($('importBtn'), 'click', ()=>{if(folderBackup?.isBusy()){toast('資料夾備份進行中，請完成後再匯入。');return;} $('importFile').value=''; $('importFile').click(); });
 listen($('importFile'), 'change', async e=>{
   const file = e.target.files[0];
+  if(folderBackup?.isBusy()){toast('資料夾備份進行中，請完成後再匯入。');e.target.value='';return;}
   if(!file || store.readOnly || !ready || $('exportBtn').getAttribute('aria-busy')==='true') return;
   $('importBtn').disabled=true;
   $('importBtn').setAttribute('aria-busy','true');
@@ -2099,6 +2107,7 @@ function onSnap(snap){
     for(const id of [...maps.keys()]) if(!seen.has(id) && !isBusy(id)) { maps.delete(id); if(id===currentId) curChanged=true; }
   }
   if(firstSnap){ firstSnap=false; afterLoad(); return; }
+  folderBackup?.changed();
   ensureKnownWorkspaces();renderSidebar();
   if(curChanged){
     if(!cur()){ const f=firstRegularMap(); openMap(f?f.id:null); }
@@ -2240,6 +2249,18 @@ const workspaceMenu=setupWorkspaceMenu({trigger:$('workspaceBtn'),getWorkspaces:
   onCreate:async name=>{const previous=workspaces,id=uid('workspace'),next=validateWorkspaces([...workspaces,{id,name,createdAt:Date.now()}]);workspaces=persistWorkspaceState(next);if(!await saveFolders()){workspaces=persistWorkspaceState(previous);throw new Error('工作區儲存失敗，請重試。');}switchWorkspace(id);toast('已建立工作區');},
   onRename:async(id,name)=>{const previous=workspaces;workspaces=persistWorkspaceState(workspaces.map(item=>item.id===id?{...item,name}:item));if(!await saveFolders()){workspaces=persistWorkspaceState(previous);throw new Error('工作區名稱儲存失敗，請重試。');}renderSidebar();toast('工作區名稱已更新');}
 });
+folderBackup=setupFolderBackup({trigger:$('folderBackupBtn'),summary:$('folderBackupStatus'),
+  isReady:()=>ready&&!store.readOnly&&!galleryPage?.isBusy()&&$('importBtn').getAttribute('aria-busy')!=='true',
+  buildArchive:async()=>{
+    // Do not interrupt typing to commit an editor in the background. Its live model
+    // is included; its later commit schedules the next backup as well.
+    return portableArchive(structuredClone([...maps.values()]),'all',null);
+  }
+});
+for(const type of ['yozu-gallery-changed','yozu-notes-changed','yozu-presets-changed'])listen(window,type,()=>folderBackup?.changed());
+// Card and node editors can hold changes before their normal blur/commit save.
+listen(world,'input',()=>folderBackup?.changed());
+disposers.push(()=>folderBackup?.destroy());
 init();
 
 // Remove everything this run drew so a hot reload or remount starts from a clean canvas.

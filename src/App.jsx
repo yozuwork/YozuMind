@@ -35,6 +35,8 @@ function Sidebar() { return (<aside className="side" id="side" aria-label="心�
       <button className="side-act" id="importBtn" title="匯入 ZIP 存檔或舊版 JSON，保留現有資料"><i className="bi bi-folder2-open" aria-hidden="true"></i>匯入存檔</button>
       <button className="side-act" id="exportBtn" title="選擇要匯出的工作區與內容"><i className="bi bi-download" aria-hidden="true"></i>匯出存檔</button>
       <button className="side-act" id="exportAllBtn" title="將所有工作區與完整內容打包成 ZIP"><i className="bi bi-archive" aria-hidden="true"></i>備份所有工作區</button>
+      <button className="side-act" id="folderBackupBtn" title="設定本機資料夾與自動備份"><i className="bi bi-folder-check" aria-hidden="true" />資料夾自動備份</button>
+      <p id="folderBackupStatus" role="status">尚未設定備份資料夾</p>
       <input id="importFile" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" hidden />
       <p>編輯自動暫存於此瀏覽器</p>
       <p>ZIP 包含圖片、文件、圖庫、筆記與關聯紀錄，可在其他裝置直接匯入。</p>

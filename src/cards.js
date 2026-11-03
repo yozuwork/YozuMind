@@ -4,6 +4,7 @@ import { readImageFile } from './canvas-assets.js';
 import { characterProgress, characterStages, characterStage, setCharacterImage, stageXp,characterSourceCards } from './character.js';
 import {listStagePresets,saveStagePreset,applyStagePreset,sameStageContent} from './stage-presets.js';
 import {setupCharacterTodoDrawer} from './character-todo-drawer.js';
+import {setupCharacterPicker} from './character-picker.js';
 import { FILE_KINDS, MAX_ATTACHMENT_BYTES, fileKind, formatSize, getFile, putFile } from './attachments.js';
 
 const bi = name => `<i class="bi bi-${name}" aria-hidden="true"></i>`;
@@ -117,6 +118,9 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
   const currentStage = card => characterStage(card,characterProgress(card,sourceCards(card)).level);
   const setPortrait = (card,src) => setCharacterImage(card,characterProgress(card,sourceCards(card)).level,src);
   let stageDialog=null;
+  const characterPicker=setupCharacterPicker({getMap,getMaps:availableMaps,getCard:id=>locate(getMap(),id)?.card,canEdit,onApply:(card,source)=>{
+    snapshot();card.stages=structuredClone(characterStages(source));card.title=source.title||card.stages[0].name||'';delete card.src;save(getMap().id);refresh(true);toast('已套用角色與成長階段');
+  }});
   const todoDrawer=setupCharacterTodoDrawer({getMap,getMaps:availableMaps,getCard:id=>locate(getMap(),id)?.card,canEdit,
     onUpdate:(card,changes)=>{const map=getMap();if(!map||locate(map,card.id)?.card!==card||!canEdit())return;snapshot();Object.assign(card,changes);save(map.id);refresh(true);},
     onLocate:(mapId,id)=>locateTodo?.(mapId,id),onOpenChange:()=>refresh(true)
@@ -357,6 +361,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       const body=h('div','character-body'), stage=currentStage(card);
       const heading=h('div','character-heading');
       heading.append(edit ? field('input','character-title',stage.name,'角色名稱',{field:'title'}) : textBlock('character-title',stage.name,'我的角色'));
+      if(canEdit()) {const pick=button('character-menu','選擇現有角色',icon('person-lines-fill'),{characterPick:''});pick.setAttribute('aria-haspopup','dialog');heading.append(pick);}
       if(canEdit()) { const menu=button('character-menu','角色卡選單',icon('list'),{characterMenu:''}); menu.setAttribute('aria-expanded',String(characterMenu===card.id)); heading.append(menu); }
       body.append(heading);
       if(stage.src) { const portrait=h('div','character-portrait'), img=h('img','character-image'); img.src=stage.src; img.alt=stage.name||'角色圖片'; img.draggable=false; portrait.append(img);body.append(portrait); }
@@ -549,6 +554,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
   }
   function render(force) {
     todoDrawer.refresh();
+    characterPicker.refresh();
     const map=getMap();
     if(mapId!==map?.id) { if(editing && mapId) save(mapId); selected=null; editing=null; drag=null; mapId=map?.id; }
     if(characterMenu!==selected && characterMenu!==editing) characterMenu=null;
@@ -836,6 +842,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       return;
     }
     if(!canEdit()) return;
+    if(b.dataset.characterPick!==undefined) {if(editing)commit();clearSelection();selected=card.id;characterPicker.open(card.id);return;}
     if(b.dataset.characterMenu!==undefined) { if(editing) commit(); clearSelection(); selected=card.id; characterMenu=characterMenu===card.id?null:card.id; refresh(true); return; }
     if(b.dataset.characterImage!==undefined) { if(editing) commit(); pickFor=card.id; picker.value=''; picker.click(); return; }
     if(b.dataset.characterLinks!==undefined) { openTodoLinks(card); return; }
@@ -1044,6 +1051,6 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       box.cards.splice(insertIndex(el,y),0,dropToast(box,{id:image.id, type:'image', src:image.src}));
       refresh(); return true;
     },
-    destroy() { todoDrawer.destroy();listeners.forEach(fn=>fn()); layer.remove(); picker.remove(); stageDialog?.remove(); tool?.ghost?.remove(); },
+    destroy() { characterPicker.destroy();todoDrawer.destroy();listeners.forEach(fn=>fn()); layer.remove(); picker.remove(); stageDialog?.remove(); tool?.ghost?.remove(); },
   };
 }
