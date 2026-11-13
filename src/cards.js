@@ -1,11 +1,14 @@
+import {formatJsonNote} from './json-format.js';
+import {parseJsonTree,renderJsonTree} from './json-tree.js';
 // Milanote-style cards floating on the canvas. Columns and folders hold other cards; notes can embed page cards.
 // A "board" card links to its own page (a separate map) and can be resized, framed and nested.
-import { readImageFile } from './canvas-assets.js';
+import { readImageFile,defaultImageSize } from './canvas-assets.js';
 import { characterProgress, characterStages, characterStage, setCharacterImage, stageXp,characterSourceCards } from './character.js';
 import {listStagePresets,saveStagePreset,applyStagePreset,sameStageContent} from './stage-presets.js';
 import {setupCharacterTodoDrawer} from './character-todo-drawer.js';
 import {setupCharacterPicker} from './character-picker.js';
 import { FILE_KINDS, MAX_ATTACHMENT_BYTES, fileKind, formatSize, getFile, putFile } from './attachments.js';
+import { WIRE_EDIT_HINT, blankWire, installWireFilters, isWireFrame, renderWire, wireInfo, wireTool } from './wireframe.js';
 
 const bi = name => `<i class="bi bi-${name}" aria-hidden="true"></i>`;
 // Sticky-note colors; the default follows the theme tokens.
@@ -29,10 +32,15 @@ export const RAIL_TOOLS = [
   ['mindmap','心智圖',bi('diagram-3')], ['board','獨立頁面',bi('folder')],
 ];
 const TOOL_INFO = Object.fromEntries(RAIL_TOOLS.map(([type,label,icon])=>[type,{label,icon}]));
+// Where the pointer holds a wireframe piece dragged from the rail (screen px from its top-left).
+const WIRE_GRAB = 14;
 const CONTAINERS = ['column','folder'];
 // Content cards use a minimum height so resizing never cuts off their content.
-const SIZED = ['note','column','character'];
-const MIN_SIZE = {board:[100,90], note:[140,48], column:[200,60], character:[200,280]};
+const SIZED = ['note','column','character','image'];
+const MIN_SIZE = {image:[24,24],board:[100,90], note:[140,48], column:[200,60], character:[200,280], wire:[24,20]};
+// Wireframe pieces snap to this grid while dragged or resized; hold Alt for free placement.
+const WIRE_GRID = 8;
+const snap = (v, free) => free ? Math.round(v) : Math.round(v/WIRE_GRID)*WIRE_GRID;
 // A note line starting with "[ ]" or "[x]" renders as a checkable to-do.
 const TODO_LINE = /^\s*\[( |x|X)\]\s?(.*)$/;
 // Lines between ``` fences render as a highlighted code block; the opening fence may name the language.
@@ -83,7 +91,7 @@ function editorText(box) {
   }
   return parts.join('\n');
 }
-const nestable = type => !CONTAINERS.includes(type) && type!=='mindmap';
+const nestable = type => !CONTAINERS.includes(type) && type!=='mindmap' && type!=='wire' && !wireTool(type);
 // Columns and folders take any nestable card; a note only embeds page cards.
 const accepts = (box, type) => CONTAINERS.includes(box) ? nestable(type) : box==='note' && type==='board';
 
@@ -277,6 +285,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
   }
   const descendants = card => [card, ...(card.cards||[]).flatMap(descendants)];
   function blank(type) {
+    const wire=wireTool(type); if(wire) return blankWire(wire, uid('c'));
     const card={id:uid('c'), type};
     if(type==='note') card.text='';
     else if(type==='link') Object.assign(card,{url:'',title:''});
@@ -291,6 +300,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     if(card.type==='todo') card.items=card.items.filter(item=>item.text.trim() || item.src);
     if(card.type==='note') card.text=card.text.replace(/(\n?[ \t]*\[ \][ \t]*)+$/,'');
     if('title' in card) card.title=card.title.trim();
+    if(card.type==='wire') card.text=String(card.text||'').replace(/\s+$/,'');
   }
 
   /* ---------- render ---------- */
@@ -308,6 +318,8 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       if(card.w && !nested) el.style.width=card.w+'px';
       if(card.h) {el.style.height=Math.max(MIN_SIZE.character[1],card.h)+'px';el.classList.add('character-sized');}
     }
+    else if(card.type==='image'){if(card.w)el.style.width=card.w+'px';if(card.h)el.style.height=card.h+'px';if(nested)el.style.maxWidth='100%';}
+    else if(card.type==='wire'){const i=wireInfo(card.kind);el.style.width=(card.w||i.w)+'px';el.style.height=(card.h||i.h)+'px';el.dataset.kind=card.kind;if(i.frame)el.classList.add('wire-frame');}
     else if(SIZED.includes(card.type)) { if(card.w && !nested) el.style.width=card.w+'px'; if(card.h && !card.collapsed) el.style.minHeight=card.h+'px'; }
     if(card.type==='note'&&card.linkedOnly) {
       const note=getNote?.(card.noteIds?.[0]),paper=h('div','note-paper linked-note-paper');
@@ -330,12 +342,22 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     }
     else if(card.type==='board') {
       const info=pageInfo(card.mapId), tile=h('div','board-tile'), name=info?.title||card.title||'未命名頁面';
-      tile.innerHTML=folderIcon(card.color,64);
+      if(info?.kind==='json'){const symbol=icon('braces');symbol.style.fontSize='40px';symbol.style.color='var(--accent)';tile.append(symbol);}else tile.innerHTML=folderIcon(card.color,64);
       const title=edit ? field('input','board-title',card.title,'頁面名稱',{field:'title'}) : textBlock('board-title',info?.title||card.title,'未命名頁面');
-      const meta=h('div','board-meta',info?`${info.count} 個物件`:'頁面已刪除');
+      const meta=h('div','board-meta',info?(info.kind==='json'?'JSON 心智圖':`${info.count} 個物件`):'頁面已刪除');
       if(card.view==='row') { const text=h('div','board-text'); text.append(title,meta); el.append(tile,text); }
       else if(card.view==='icon') { el.title=name; el.append(tile); if(edit) el.append(title); }
       else el.append(tile,title,meta);
+    }
+    else if(card.type==='wire') {
+      el.append(renderWire(card));
+      if(edit) {
+        const info=wireInfo(card.kind), box=h('div','wire-editor'), multi=!!info.multi;
+        const f=field(multi?'textarea':'input','wire-input',card.text,info.label+'文字',{field:'text'});
+        if(multi) f.rows=Math.min(8,Math.max(2,(card.text||'').split('\n').length));
+        box.append(h('span','wire-editor-label',info.label), f, h('span','wire-editor-hint',(WIRE_EDIT_HINT[card.kind]||(multi?'Enter 換行':'Enter 完成'))+' · Esc 完成'));
+        el.append(box);
+      }
     }
     else if(card.type==='file') {
       const kind=FILE_KINDS[card.kind]||FILE_KINDS.pdf, row=h('div','file-row'), badge=h('span','file-icon'), meta=h('div','file-meta');
@@ -432,7 +454,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       (card.type==='character'?el.querySelector('.character-body'):el).append(links);
     }
     if(selected===card.id && !edit && canEdit()) {
-      if((card.type==='board' && card.view!=='icon') || SIZED.includes(card.type)) { const grip=h('div','card-resize'); grip.title='拖曳調整大小'; el.append(grip); }
+      if((card.type==='board' && card.view!=='icon') || SIZED.includes(card.type) || card.type==='wire') { const grip=h('div','card-resize'); grip.title=card.type==='wire'?'拖曳調整大小（按住 Alt 不對齊格線）':'拖曳調整大小'; el.append(grip); }
       if(card.type!=='character') el.append(actions(card));
     }
     return el;
@@ -444,6 +466,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     return h('div','note-text note-collapsed'+(first?'':' ph'),(first||'空白筆記')+(more?' …':''));
   }
   function noteBody(card) {
+    if(card.jsonTree){try{return renderJsonTree(card.text,onChange);}catch{/* Invalid edits remain visible as text. */}}
     if(!card.text) return card.title ? h('div','note-text note-empty') : h('div','note-text ph','空白筆記');
     const box=h('div','note-text');
     let code=null;
@@ -548,8 +571,11 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     if(card.type==='folder') bar.append(button('',card.open?'收合':'開啟',icon(card.open?'folder2':'folder2-open'),{cardAct:'open'}));
     if(card.type==='note') bar.append(button('','加入待辦',icon('check2-square'),{cardAct:'todo'}), button('','插入程式碼',icon('code-slash'),{cardAct:'code'}), button('',`縮小文字（目前 ${card.fs||14}px）`,'A−',{cardAct:'fsDown'}), button('',`放大文字（目前 ${card.fs||14}px）`,'A+',{cardAct:'fsUp'}), button('','便利貼顏色',icon('palette'),{cardAct:'color'}));
     if(card.type==='file') bar.append(button('',card.kind==='pdf'?'開啟 PDF':'開啟（下載）',icon('box-arrow-up-right'),{cardAct:'fileOpen'}), button('','下載',icon('download'),{cardAct:'fileSave'}));
+    if(card.type==='wire' && wireInfo(card.kind).state) bar.append(button('',card.kind==='button'?(card.on?'改為次要按鈕':'改為主要按鈕'):(card.on?'改為未選取':'改為已選取'),icon(card.on?'toggle-on':'toggle-off'),{cardAct:'wireState'}));
+    if(card.type==='wire') bar.append(button('','建立副本',icon('copy'),{cardAct:'wireDup'}));
     if(card.type!=='image' && card.type!=='file') bar.append(button('','編輯',icon('pencil'),{cardAct:'edit'}));
     bar.append(button('','刪除',icon('trash'),{cardAct:'delete'}));
+    if(card.type==='note'&&!card.linkedOnly)bar.prepend(button('',card.jsonTree?'切回 JSON 原文':'JSON 樹狀檢視',icon('diagram-3'),{cardAct:'jsonTree'}),button('','格式化 JSON',icon('braces'),{cardAct:'formatJson'}));
     return bar;
   }
   function render(force) {
@@ -586,14 +612,22 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     snapshot(); map.cards ||= [];
     const box=containerId && locate(map,containerId)?.card;
     if(box && accepts(box.type,type)) { box.cards ||= []; box.cards.splice(index ?? box.cards.length, 0, card); }
+    else if(card.type==='wire') { card.x=snap(at.x); card.y=snap(at.y); card.z=isWireFrame(card)?lowestZ(map)-1:nextZ(); map.cards.push(card); }
     else { card.x=Math.round(at.x); card.y=Math.round(at.y); card.z=nextZ(); map.cards.push(card); }
-    clearSelection(); selected=card.id; editing=card.id; editFresh=true;
+    clearSelection(); selected=card.id;
+    // Wireframe pieces arrive ready to use, so fast drag-and-drop never lands in a text editor.
+    if(card.type==='wire') { save(map.id); refresh(); return; }
+    editing=card.id; editFresh=true;
     save(map.id); refresh(true); focusEditor(type==='todo'?'[data-item]':null);
     if(type==='board') pagesChanged();
   }
+  // Frames (windows, containers) go under everything already on the board.
+  function lowestZ(map) { let z=0; for(const o of [...(map.images||[]),...(map.cards||[]),...(map.strokes||[])]) z=Math.min(z,o.z||0); return z; }
   function createAtCenter(type) {
     const v=getView(), c={x:(canvas.clientWidth/2-v.x)/v.k, y:(canvas.clientHeight/2-v.y)/v.k};
     if(type==='mindmap') return create(type,null);
+    const wire=wireTool(type);
+    if(wire) { const i=wireInfo(wire), n=(getMap()?.cards||[]).length%6; return create(type,{x:c.x-i.w/2+n*16, y:c.y-i.h/2+n*16}); }
     const w={column:280, folder:170, board:160}[type]||240, n=(getMap()?.cards||[]).length%6;
     create(type, {x:c.x-w/2+n*24, y:c.y-60+n*24});
   }
@@ -660,7 +694,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     const id=el.dataset.id;
     if(e.target.closest('.card-resize') && canEdit()) {
       e.preventDefault(); const card=locate(getMap(),id)?.card;
-      if(card) { const b=boxOf(el); resize={id, pointer:e.pointerId, sx:e.clientX, sy:e.clientY, w:card.w||b.w, h:card.type==='board'?card.h||b.h:b.h, min:MIN_SIZE[card.type], moved:false}; }
+      if(card) { const b=boxOf(el); resize={id, pointer:e.pointerId, sx:e.clientX, sy:e.clientY, w:card.w||b.w, h:['board','wire'].includes(card.type)?card.h||b.h:b.h, min:MIN_SIZE[card.type], moved:false}; }
       return;
     }
     if(e.target.closest('a,button,input,textarea,select,summary,label')) return;
@@ -670,6 +704,8 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       return;
     }
     e.preventDefault();
+    // Clicking a wireframe piece while its text is open keeps the caret in the editor.
+    if(editing===id && el.dataset.type==='wire') { el.querySelector('[data-field]')?.focus({preventScroll:true}); return; }
     canvas.focus({preventScroll:true});
     if(editing===id) return;
     if(editing) commit();
@@ -681,16 +717,32 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     const map=getMap(), loc=locate(map,drag.id), el=cardEl(drag.id);
     if(!loc || !el) { drag=null; return; }
     const b=boxOf(el); snapshot();
-    loc.list.splice(loc.i,1); map.cards.push(loc.card); loc.card.z=nextZ();
+    const frame=isWireFrame(loc.card);
+    loc.list.splice(loc.i,1); map.cards.push(loc.card); if(!frame) loc.card.z=nextZ();
+    // A window or container carries whatever sits fully inside it and above it.
+    const inside=r=>r.x>=b.x-1 && r.y>=b.y-1 && r.x+r.w<=b.x+b.w+1 && r.y+r.h<=b.y+b.h+1;
+    const carry=frame ? map.cards.filter(c=>c!==loc.card && !c.inbox && !isHidden?.(c.id) && (c.z||0)>(loc.card.z||0) && Number.isFinite(c.x)).map(c=>{ const e=cardEl(c.id), r=e&&boxOf(e); return r && inside(r) ? {card:c, ox:c.x-loc.card.x, oy:c.y-loc.card.y} : null; }).filter(Boolean) : [];
     if(loc.parent) Object.assign(loc.card,{x:b.x, y:b.y});
     const p=pointAt(e.clientX,e.clientY);
-    Object.assign(drag,{moved:true, map:map.id, card:loc.card, dx:p.x-b.x, dy:p.y-b.y});
+    Object.assign(drag,{moved:true, map:map.id, card:loc.card, dx:p.x-b.x, dy:p.y-b.y, carry});
     render(); drag.el=cardEl(drag.id); drag.el.classList.add('dragging');
+    for(const c of carry) { c.el=cardEl(c.card.id); c.el?.classList.add('carried'); }
   }
   on(window,'pointermove',e=>{
     if(resize && e.pointerId===resize.pointer) {
       const card=locate(getMap(),resize.id)?.card, el=cardEl(resize.id), k=getView().k; if(!card || !el) return;
       if(!resize.moved) { snapshot(); resize.moved=true; }
+      if(card.type==='image'){
+        const factor=Math.max(24/Math.max(resize.w,resize.h),Math.min(10000/resize.w,10000/resize.h,1+((e.clientX-resize.sx)/k*resize.w+(e.clientY-resize.sy)/k*resize.h)/(resize.w*resize.w+resize.h*resize.h)));
+        card.w=resize.w*factor;card.h=resize.h*factor;el.style.width=card.w+'px';el.style.height=card.h+'px';onChange();return;
+      }
+      if(card.type==='wire'){
+        const free=e.altKey;
+        card.w=Math.min(2400,Math.max(24,snap(resize.w+(e.clientX-resize.sx)/k,free)));card.h=Math.min(2400,Math.max(20,snap(resize.h+(e.clientY-resize.sy)/k,free)));
+        el.style.width=card.w+'px';el.style.height=card.h+'px';
+        if(card.kind==='image'&&!card.text?.trim()){const cap=el.querySelector('.wf-cap');if(cap)cap.textContent=`${card.w} × ${card.h}`;}
+        onChange();return;
+      }
       const [minW,minH]=resize.min, nested=!!el.parentElement.closest('.card');
       if(!nested) card.w=Math.round(Math.min(1200,Math.max(minW,resize.w+(e.clientX-resize.sx)/k)));
       // A row-style page card only stretches sideways.
@@ -705,17 +757,22 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     if(tool && e.pointerId===tool.pointer) {
       if(!tool.ghost) {
         if(Math.hypot(e.clientX-tool.sx,e.clientY-tool.sy)<5) return;
-        tool.ghost=h('div','card-ghost'); tool.ghost.innerHTML=TOOL_INFO[tool.type].icon; tool.ghost.append(TOOL_INFO[tool.type].label); document.body.append(tool.ghost);
+        const wire=wireTool(tool.type);
+        if(wire) { const i=wireInfo(wire); tool.ghost=h('div','wf-ghost'); tool.ghost.style.width=i.w+'px'; tool.ghost.style.height=i.h+'px'; tool.ghost.append(renderWire(blankWire(wire,''))); }
+        else { tool.ghost=h('div','card-ghost'); tool.ghost.innerHTML=TOOL_INFO[tool.type].icon; tool.ghost.append(TOOL_INFO[tool.type].label); }
+        document.body.append(tool.ghost);
       }
-      tool.ghost.style.transform=`translate(${e.clientX-20}px,${e.clientY-16}px)`;
+      tool.ghost.style.transform=wireTool(tool.type) ? `translate(${e.clientX-WIRE_GRAB}px,${e.clientY-WIRE_GRAB}px) scale(${getView().k})` : `translate(${e.clientX-20}px,${e.clientY-16}px)`;
       highlight(tool, dropTarget(e,tool.type)?.box||null);
       return;
     }
     if(!drag || e.pointerId!==drag.pointer) return;
     if(!drag.moved) { if(Math.hypot(e.clientX-drag.sx,e.clientY-drag.sy)<5) return; beginDrag(e); if(!drag) return; }
     const p=pointAt(e.clientX,e.clientY);
-    drag.card.x=Math.round(p.x-drag.dx); drag.card.y=Math.round(p.y-drag.dy);
+    const wire=drag.card.type==='wire';
+    drag.card.x=wire?snap(p.x-drag.dx,e.altKey):Math.round(p.x-drag.dx); drag.card.y=wire?snap(p.y-drag.dy,e.altKey):Math.round(p.y-drag.dy);
     drag.el.style.left=drag.card.x+'px'; drag.el.style.top=drag.card.y+'px';
+    for(const c of drag.carry||[]) { c.card.x=drag.card.x+c.ox; c.card.y=drag.card.y+c.oy; if(c.el) { c.el.style.left=c.card.x+'px'; c.el.style.top=c.card.y+'px'; } }
     highlight(drag, nestable(drag.card.type) ? dropTarget(e,drag.card.type)?.box||null : null);
     onChange();
   });
@@ -727,7 +784,8 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       t.ghost.remove();
       const target=e.type==='pointerup' && dropTarget(e,t.type); if(!target) return;
       const p=pointAt(e.clientX,e.clientY);
-      create(t.type, t.type==='mindmap' ? p : {x:p.x-20, y:p.y-16}, target.box?.dataset.id, target.box && insertIndex(target.box,e.clientY));
+      const k=getView().k;
+      create(t.type, t.type==='mindmap' ? p : wireTool(t.type) ? {x:p.x-WIRE_GRAB/k, y:p.y-WIRE_GRAB/k} : {x:p.x-20, y:p.y-16}, target.box?.dataset.id, target.box && insertIndex(target.box,e.clientY));
       return;
     }
     if(!drag || e.pointerId!==drag.pointer) return;
@@ -772,6 +830,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
   on(layer,'input',e=>{
     const f=e.target, loc=locate(getMap(),f.closest('.card')?.dataset.id); if(!loc) return;
     if(f.dataset.item) { const item=loc.card.items.find(i=>i.id===f.dataset.item); if(item) item.text=f.value; }
+    else if(f.dataset.field && loc.card.type==='wire') { loc.card.text=f.value; cardEl(loc.card.id)?.querySelector(':scope > .wf-body')?.replaceWith(renderWire(loc.card)); if(f.tagName==='TEXTAREA') f.rows=Math.min(8,Math.max(2,f.value.split('\n').length)); onChange(); return; }
     else if(f.dataset.field) { loc.card[f.dataset.field]=f.value; if(loc.card.type==='character' && f.dataset.field==='title' && loc.card.stages?.length) currentStage(loc.card).name=f.value; }
     else if(f.dataset.seg!==undefined || f.dataset.lang!==undefined) { syncNote(loc.card,f); return; }
     if(f.tagName==='TEXTAREA') autosize(f);
@@ -782,6 +841,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     const f=e.target;
     if(e.key==='Escape' || (e.key==='Enter' && (e.metaKey||e.ctrlKey))) { e.preventDefault(); commit(); canvas.focus({preventScroll:true}); return; }
     const loc=locate(getMap(),editing); if(!loc) return;
+    if(loc.card.type==='wire') { if(e.key==='Enter' && f.tagName==='INPUT') { e.preventDefault(); commit(); canvas.focus({preventScroll:true}); } return; }
     // Tab indents inside the note editor so code can be typed naturally.
     if(f.tagName==='TEXTAREA' && e.key==='Tab' && !e.shiftKey) {
       e.preventDefault(); f.setRangeText('  ',f.selectionStart,f.selectionEnd,'end'); syncNote(loc.card,f); return;
@@ -842,6 +902,8 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       return;
     }
     if(!canEdit()) return;
+    if(b.dataset.wireToggle!==undefined || b.dataset.cardAct==='wireState') { if(editing&&editing!==card.id) commit(); snapshot(); if(card.on) delete card.on; else card.on=true; save(map.id); refresh(editing===card.id); return; }
+    if(b.dataset.cardAct==='wireDup') { if(editing) commit(); const copy=structuredClone(card); copy.id=uid('c'); delete copy.anchor; api.paste(copy,{x:card.x+WIRE_GRID*3, y:card.y+WIRE_GRID*3},null); if(isWireFrame(copy)) { copy.z=lowestZ(map)-1; save(map.id); refresh(); } return; }
     if(b.dataset.characterPick!==undefined) {if(editing)commit();clearSelection();selected=card.id;characterPicker.open(card.id);return;}
     if(b.dataset.characterMenu!==undefined) { if(editing) commit(); clearSelection(); selected=card.id; characterMenu=characterMenu===card.id?null:card.id; refresh(true); return; }
     if(b.dataset.characterImage!==undefined) { if(editing) commit(); pickFor=card.id; picker.value=''; picker.click(); return; }
@@ -905,6 +967,20 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       ta.value+=(ta.value && !ta.value.endsWith('\n') ? '\n' : '')+'[ ] '; if(ta.dataset.extra!==undefined) delete ta.dataset.extra;
       syncNote(card,ta); ta.focus(); ta.setSelectionRange(ta.value.length,ta.value.length);
     }
+    else if(b.dataset.cardAct==='jsonTree') {
+      if(card.type!=='note'||card.linkedOnly)return;
+      const source=editing===card.id?editorText(cardEl(card.id).querySelector('.note-editor')):card.text;
+      if(!card.jsonTree){try{parseJsonTree(source);}catch(error){toast(error.message);return;}}
+      if(editing)commit();snapshot();card.jsonTree=!card.jsonTree;save(getMap().id);refresh();
+      toast(card.jsonTree?'已切換 JSON 樹狀檢視，點三角形展開或收合。':'已切回原文。');
+    }
+    else if(b.dataset.cardAct==='formatJson') {
+      if(card.type!=='note'||card.linkedOnly)return;
+      const source=editing===card.id?editorText(cardEl(card.id).querySelector('.note-editor')):card.text;
+      let formatted;try{formatted=formatJsonNote(source);}catch(error){toast(error.message);return;}
+      if(formatted===source&&!card.jsonTree){toast('JSON 已經格式化。');return;}
+      if(editing)commit();snapshot();card.text=formatted;delete card.jsonTree;save(getMap().id);refresh();toast('JSON 已格式化，可用 Ctrl / ⌘ + Z 復原。');
+    }
     else if(b.dataset.cardAct==='code') {
       startEdit(card.id);
       card.text=(card.text ? card.text+'\n' : '')+'```js\n\n```';
@@ -918,13 +994,14 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     const card=locate(getMap(),el.dataset.id)?.card;
     if(card?.type==='board') openPageOf(card); else if(card?.type==='file') openFile(card,false); else if(card?.type!=='folder') startEdit(el.dataset.id);
   });
+  installWireFilters();
   async function addPickedImages(files, target) {
     if(!canEdit()) return;
     if(editing) commit();
     const map=getMap(), id=typeof target==='object'?target.id:target; let first=true, after=target?.after;
     for(const file of files) {
       try {
-        const {src}=await readImageFile(file), box=getMap()===map && locate(map,id)?.card;
+        const {src,width,height}=await readImageFile(file), box=getMap()===map && locate(map,id)?.card;
         if(!box || !canEdit()) break;
         if(first) { snapshot(); first=false; }
         if(box.type==='character') setPortrait(box,src);
@@ -934,7 +1011,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
             const index=box.items.findIndex(i=>i.id===after); if(index<0) continue;
             item.displayOnly=true; box.items.splice(index+1,0,item); after=item.id;
           } else box.items.push(item);
-        } else { box.cards.push({id:uid('c'), type:'image', src}); if(box.type==='folder') box.open=true; }
+        } else { box.cards.push({id:uid('c'), type:'image', src,...defaultImageSize(width,height)}); if(box.type==='folder') box.open=true; }
         save(map.id); refresh();
       } catch(error) { toast(error.message); }
     }
@@ -949,7 +1026,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     else if(e.key==='Tab' && canEdit() && hostOf?.(selected)) { e.preventDefault(); e.stopImmediatePropagation(); nodeAction(selected,'child'); }
   },true);
 
-  return {
+  const api = {
     render,
     commit,
     setNoteLinks(id,ids) {const map=getMap(),card=locate(map,id)?.card;if(!card||!['note','character'].includes(card.type)||!canEdit())return;if(editing)commit();snapshot();card.noteIds=[...new Set(ids)];save(map.id);refresh(true);},
@@ -1048,9 +1125,10 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
         if(index>=0) { item.displayOnly=true; box.items.splice(index+1,0,item); } else box.items.push(item);
         refresh(); return true;
       }
-      box.cards.splice(insertIndex(el,y),0,dropToast(box,{id:image.id, type:'image', src:image.src}));
+      box.cards.splice(insertIndex(el,y),0,dropToast(box,{id:image.id, type:'image', src:image.src,...defaultImageSize(image.w,image.h)}));
       refresh(); return true;
     },
     destroy() { characterPicker.destroy();todoDrawer.destroy();listeners.forEach(fn=>fn()); layer.remove(); picker.remove(); stageDialog?.remove(); tool?.ghost?.remove(); },
   };
+  return api;
 }

@@ -150,7 +150,8 @@ button:focus-visible,input:focus-visible,.canvas:focus-visible{outline:2px solid
 /* ---------- Canvas ---------- */
 .canvas{flex:1;position:relative;overflow:hidden;background-color:var(--canvas);background-image:radial-gradient(circle, color-mix(in srgb, var(--dot) 75%, transparent) .65px, transparent 1px);background-size:12px 12px;touch-action:none;outline:none;cursor:default}
 .canvas.panning{cursor:grabbing}
-.world{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
+/* Let the browser rasterize text at the current scale instead of retaining a promoted bitmap. */
+.world{position:absolute;left:0;top:0;transform-origin:0 0}
 #edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
 #edges path{fill:none;stroke-linecap:round}
 #edges .chip{pointer-events:auto;cursor:pointer}
@@ -190,6 +191,7 @@ button:focus-visible,input:focus-visible,.canvas:focus-visible{outline:2px solid
 .zoombar button{height:28px;min-width:28px;padding:0 6px;border-radius:6px;font-size:13px}
 .zoombar button:hover{background:var(--panel-hover)}
 .zoombar .zl{min-width:48px;font-variant-numeric:tabular-nums}
+.zoombar #zFocus{display:flex;align-items:center;gap:5px;color:var(--accent);border-left:1px solid var(--line);margin-left:3px}
 .zoombar .zoom-range{width:104px;height:28px;margin:0 6px;accent-color:var(--accent);cursor:pointer;touch-action:none}
 @media(max-width:540px){.zoombar .zoom-range{width:72px;margin:0 3px}}
 .hint{position:absolute;left:14px;bottom:14px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px;color:var(--ink-2);z-index:5;pointer-events:none;user-select:none;-webkit-user-select:none}
@@ -910,7 +912,12 @@ kbd{font-family:var(--font);font-size:11px;padding:1px 6px;border-radius:4px;bor
 .note-swatch{width:22px !important;height:22px !important;border-radius:50% !important;background:var(--c, var(--note-bg)) !important;border:2px solid var(--panel-line)}
 .note-swatch.on{border-color:var(--accent)}
 .card-image{overflow:hidden}
-.card-img{display:block;width:100%;height:auto;border-radius:3px;pointer-events:none}
+.card-img{display:block;width:100%;height:auto;max-height:280px;object-fit:contain;border-radius:3px;pointer-events:none}
+.card-image[style*="height"] .card-img{height:100%;max-height:none}
+.image-tools{z-index:8}.image-tools small{font-size:10px;line-height:1.6;padding:8px;white-space:pre-line;color:var(--ink-2)}
+.image-preview{width:94vw;height:92vh;max-width:none;max-height:none;padding:0;border:1px solid var(--line);border-radius:12px;background:var(--main-bg);color:var(--ink)}
+.image-preview::backdrop{background:#0009}.image-preview header{height:64px;display:flex;align-items:center;gap:14px;padding:12px;border-bottom:1px solid var(--line);flex-wrap:wrap}.image-preview header span:first-child{margin-right:auto}.image-preview header button{padding:6px;background:var(--side-bg);border-radius:5px}.image-preview-area{height:calc(100% - 64px);overflow:auto;padding:16px}.image-preview-area img{display:block;max-width:none;max-height:none}
+@media(max-width:600px){.image-preview header{height:108px;font-size:12px}.image-preview-area{height:calc(100% - 108px)}.image-preview input{width:100px}}
 .card-folder.closed{width:170px;padding:14px 12px 12px;text-align:center;border-radius:6px}
 .folder-tile svg{width:72px;height:72px;margin:0 auto 6px;display:block}
 .folder-title{font-weight:700;word-break:break-word}
@@ -1027,6 +1034,10 @@ kbd{font-family:var(--font);font-size:11px;padding:1px 6px;border-radius:4px;bor
 .code-copy{width:24px;height:22px;display:grid;place-items:center;border-radius:4px;color:#8f8ba3;font-size:12px}
 .code-copy:hover{background:rgba(255,255,255,.08);color:#e9e6f2}
 .code-body{padding:6px 0}
+.json-tree{font:13px/1.8 ui-monospace,Consolas,monospace;max-height:560px;overflow:auto;text-align:left;white-space:normal;cursor:text}
+.json-tree summary{cursor:pointer;padding:3px 0;overflow-wrap:anywhere}.json-tree summary:hover{background:var(--side-hover)}
+.json-children{margin-left:10px;padding-left:12px;border-left:1px solid var(--line)}.json-leaf{padding:3px 0;overflow-wrap:anywhere}
+.json-key{font-weight:600}.json-meta{color:var(--ink-2)}.json-string{color:#21814a}.json-number{color:var(--accent)}.json-boolean,.json-null{color:#a65cbb}
 .code-line{display:grid;grid-template-columns:2.6em 1fr}
 .code-num{padding-right:10px;text-align:right;color:#6d6a80;user-select:none;border-right:1px solid rgba(255,255,255,.07)}
 .code-text{padding:0 12px;white-space:pre-wrap;word-break:break-word;tab-size:2}

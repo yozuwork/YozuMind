@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { initializeMindMap } from './mindmap.js';
 import { RAIL_TOOLS } from './cards.js';
+import { WIRE_GROUPS, WIRE_KINDS } from './wireframe.js';
 
 function Sidebar() { return (<aside className="side" id="side" aria-label="心智圖列表">
     <div className="ws">
@@ -20,9 +21,11 @@ function Sidebar() { return (<aside className="side" id="side" aria-label="心�
       <button className="side-act daily-open" id="dailyOpen" title="開啟每日獨立畫布"><i className="bi bi-calendar3" aria-hidden="true" /><span>每日心智圖</span><span className="daily-count" id="dailyCount" /></button>
     </div>
     <button className="side-act" id="sectionsBtn" title="管理工作分區"><i className="bi bi-grid-1x2" aria-hidden="true" /><span className="section-nav-label">工作分區</span><span className="section-nav-tag" id="sectionTag">一般分區</span></button>
+    <button className="side-act" id="projectsBtn" title="管理專案頁面、看板與日曆"><i className="bi bi-folder2-open" aria-hidden="true" /><span>專案專區</span></button>
     <div className="sec sidebar-library-heading" id="regularHeading"><span>心智圖</span><span id="count" /><div className="library-actions">
       <button className="icon-btn" id="searchToggle" title="搜尋心智圖" aria-label="搜尋心智圖" aria-expanded="false" aria-controls="sidebarSearch"><i className="bi bi-search" /></button>
       <button className="icon-btn" id="newBtn" title="新增心智圖" aria-label="新增心智圖"><i className="bi bi-plus-lg" /></button>
+      <button className="icon-btn" id="newJsonBtn" title="新增 JSON 心智圖" aria-label="新增 JSON 心智圖"><i className="bi bi-braces" /></button>
       <button className="icon-btn" id="newFolderBtn" title="新增資料夾" aria-label="新增資料夾"><i className="bi bi-folder-plus" /></button>
     </div></div>
     <label className="search" id="sidebarSearch" hidden><i className="bi bi-search" aria-hidden="true" /><input id="search" type="text" placeholder="搜尋心智圖" autoComplete="off" /></label>
@@ -91,6 +94,8 @@ function Toolbar() { return (<header className="topbar">
 // Shown over the tool rail while a note (card or note-style node) is selected.
 function NoteRail() { return (<nav className="toolrail ctx-rail" id="ctxRail" aria-label="筆記工具" hidden>
       <button className="ctx-back" data-ctx="back" title="返回工具列 (Esc)" aria-label="返回工具列"><i className="bi bi-arrow-left" aria-hidden="true"></i></button>
+      <button className="rail-tool" data-ctx="jsonTree" title="切換 JSON 樹狀檢視"><span className="rail-icon"><i className="bi bi-diagram-3" /></span><span className="rail-label">JSON 樹狀</span></button>
+      <button className="rail-tool" data-ctx="formatJson" title="格式化 JSON"><span className="rail-icon"><i className="bi bi-braces" /></span><span className="rail-label">格式化 JSON</span></button>
       {[['title','標題','type-h1'],['color','顏色','palette'],['smaller','縮小文字','fonts'],['bigger','放大文字','fonts'],['todo','待辦','check2-square'],['code','程式碼','code-slash'],['rename','角色名稱','person-badge'],['image','加入圖片','image'],['removeImage','移除圖片','image-fill'],['links','連動清單','list-check'],['delete','刪除','trash']].map(([k,label,ic]) => (
         <button className="rail-tool" data-ctx={k} key={k} title={label}>
           <span className="rail-icon"><i className={`bi bi-${ic}${k==='smaller'?' fs-small':''}`} aria-hidden="true"></i></span>
@@ -101,7 +106,27 @@ function NoteRail() { return (<nav className="toolrail ctx-rail" id="ctxRail" ar
       <button className="rail-tool" data-ctx="notes" title="關聯筆記"><span className="rail-icon"><i className="bi bi-journal-arrow-up" aria-hidden="true" /></span><span className="rail-label">關聯筆記</span></button>
       <div className="character-rail-info" id="characterRailInfo" hidden />
     </nav>); }
-function ToolRail() { return (<nav className="toolrail" id="toolrail" aria-label="卡片工具">
+// The mode switch only swaps which tools the rail shows; every mode edits the same page.
+function RailMode() { return (<div className="rail-mode" role="group" aria-label="工具模式">
+      <span className="rail-mode-thumb" aria-hidden="true" />
+      <button type="button" data-rail-mode-btn="map" title="心智圖模式：卡片、筆記與心智圖" aria-label="心智圖模式"><i className="bi bi-diagram-3" aria-hidden="true" /></button>
+      <button type="button" data-rail-mode-btn="wire" title="線框模式：拖拉假網頁元件，快速排版" aria-label="線框模式"><i className="bi bi-window-sidebar" aria-hidden="true" /></button>
+    </div>); }
+function WireTools() { return (<div className="rail-set" data-set="wire">
+      {WIRE_GROUPS.map(([group, name]) => (<div className="wire-group" key={group} role="group" aria-label={name}>
+        <span className="rail-heading">{name}</span>
+        {WIRE_KINDS.filter(k => k[3] === group).map(([kind, label, icon]) => (
+          <button className="rail-tool wire-tool" data-tool={`wire:${kind}`} key={kind} title={`${label}：點一下新增，或直接拖曳到畫布`}>
+            <span className="rail-icon" dangerouslySetInnerHTML={{ __html: icon }}></span>
+            <span className="rail-label">{label}</span>
+          </button>
+        ))}
+      </div>))}
+    </div>); }
+function ToolRail() { return (<nav className="toolrail" id="toolrail" aria-label="卡片工具" data-mode="map">
+      <RailMode />
+      <WireTools />
+      <div className="rail-set" data-set="map">
       {RAIL_TOOLS.map(([type, label, icon]) => (
         <button className="rail-tool" data-tool={type} key={type} title={`${label}：點一下新增，或拖曳到畫布、欄位`}>
           <span className="rail-icon" dangerouslySetInnerHTML={{ __html: icon }}></span>
@@ -111,6 +136,7 @@ function ToolRail() { return (<nav className="toolrail" id="toolrail" aria-label
       <button className="rail-tool" id="insertNoteBtn" title="插入關聯筆記"><span className="rail-icon"><i className="bi bi-journal-arrow-down" aria-hidden="true" /></span><span className="rail-label">關聯筆記</span></button>
       <button className="rail-tool" id="inboxBtn" title="這張心智圖的暫存區" aria-expanded="false"><span className="rail-icon"><i className="bi bi-inbox" aria-hidden="true" /><span className="inbox-count" hidden /></span><span className="rail-label">暫存區</span></button>
       <button className="rail-tool" id="arrangeBtn" title="一鍵排列：從左上角整齊排列畫布物件，可復原"><span className="rail-icon"><i className="bi bi-grid-3x3-gap" aria-hidden="true" /></span><span className="rail-label">一鍵排列</span></button>
+      </div>
       <button className="rail-tool" id="drawBtn" title="塗鴉：筆、螢光筆、橡皮擦與套索">
         <span className="rail-icon"><i className="bi bi-pencil" aria-hidden="true"></i></span>
         <span className="rail-label">塗鴉</span>
@@ -157,6 +183,10 @@ function Canvas() { return (<div className="canvas" id="canvas" tabIndex="0" ari
         <span><kbd>雙擊</kbd>編輯</span>
         <span><kbd>拖曳</kbd>移到其他節點下</span>
         <span><kbd>Shift</kbd>+拖曳 框選</span>
+        <span className="wire-hint"><kbd>拖曳</kbd>元件到畫布</span>
+        <span className="wire-hint"><kbd>雙擊</kbd>改文字</span>
+        <span className="wire-hint"><kbd>Alt</kbd>+拖曳 不對齊格線</span>
+        <span className="wire-hint">拖動視窗會帶著裡面的元件</span>
       </div>
       <div className="marquee" id="marquee" hidden></div>
       <div className="nodebar group-bar" id="groupBar">
@@ -171,8 +201,9 @@ function Canvas() { return (<div className="canvas" id="canvas" tabIndex="0" ari
       <div className="zoombar">
         <button id="zOut" title="縮小" aria-label="縮小"><i className="bi bi-dash-lg" aria-hidden="true"></i></button>
         <input id="zRange" className="zoom-range" type="range" min="20" max="250" step="1" defaultValue="100" aria-label="畫布縮放比例" aria-valuetext="100%" />
-        <button id="zLabel" className="zl" title="重設為 100%">100%</button>
+        <button id="zLabel" className="zl" title="重設為 100%，有選取物件時將它置中">100%</button>
         <button id="zIn" title="放大" aria-label="放大"><i className="bi bi-plus-lg" aria-hidden="true"></i></button>
+        <button id="zFocus" title="聚焦選取：以選取物件的大小置中放大，不移動物件" aria-label="聚焦選取"><i className="bi bi-crosshair" aria-hidden="true" /><span>聚焦</span></button>
         <button id="zFit" title="置中整張圖" aria-label="置中整張圖">
           <i className="bi bi-arrows-fullscreen" aria-hidden="true"></i>
         </button>

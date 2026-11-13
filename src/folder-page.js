@@ -2,7 +2,7 @@ const el=(tag,cls,text)=>{const n=document.createElement(tag);n.className=cls||'
 const icon=name=>{const n=el('i','bi bi-'+name);n.setAttribute('aria-hidden','true');return n;};
 const button=(label,ic,action,cls='btn')=>{const n=el('button',cls,label);n.prepend(icon(ic));n.addEventListener('click',action);return n;};
 
-export function setupFolderPage({app,getFolder,getFolders,getMaps,canEdit,beforeOpen,onClose,onCreateMap,onCreateFolder,onRename,onMenu,onOpenMap,onSection,toggleSidebar,onChange}){
+export function setupFolderPage({app,getFolder,getFolders,getMaps,canEdit,beforeOpen,onClose,onCreateMap,onCreateJson,onCreateFolder,onRename,onMenu,onOpenMap,onSection,toggleSidebar,onChange}){
   let current=null;
   const page=el('section','folder-page');page.hidden=true;page.setAttribute('aria-label','資料夾內容');app.querySelector('.main').append(page);
   function hide(){current=null;page.hidden=true;app.classList.remove('folder-mode');}
@@ -40,9 +40,10 @@ export function setupFolderPage({app,getFolder,getFolders,getMaps,canEdit,before
     const mapButton=button('新增心智圖','plus-lg',()=>onCreateMap(current),'folder-create-map');
     const folderButton=button('新增子資料夾','folder-plus',()=>onCreateFolder(current),'folder-create-sub');
     mapButton.disabled=folderButton.disabled=!canEdit();create.append(mapButton,folderButton);
+    const jsonButton=button('新增 JSON 心智圖','braces',()=>onCreateJson(current),'folder-create-sub');jsonButton.disabled=!canEdit();create.insertBefore(jsonButton,folderButton);
     const grid=el('div','folder-grid');
     for(const f of subs){const card=button('','folder2',()=>show(f.id),'folder-card folder-card-folder');card.append(el('strong','',f.name),el('span','','子資料夾'));grid.append(card);}
-    for(const m of maps){const card=button('','diagram-3',()=>onOpenMap(m.id),'folder-card');card.append(el('strong','',m.title||'未命名心智圖'),el('span','','心智圖'));grid.append(card);}
+    for(const m of maps){const card=button('',m.kind==='json'?'braces':'diagram-3',()=>onOpenMap(m.id),'folder-card');card.append(el('strong','',m.title||'未命名心智圖'),el('span','',m.kind==='json'?'JSON 心智圖':'心智圖'));grid.append(card);}
     body.append(hero,create,el('h2','folder-section-title','資料夾內容'));
     if(!maps.length&&!subs.length){const empty=el('div','folder-empty-state');empty.append(icon('folder2-open'),el('h2','','從第一張心智圖開始'),el('p','','把相關想法放在一起，慢慢整理成你的思考空間。'));body.append(empty);}else body.append(grid);
     page.append(top,body);

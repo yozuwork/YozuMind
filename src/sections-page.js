@@ -1,7 +1,7 @@
 const el=(tag,cls,text)=>{const n=document.createElement(tag);n.className=cls||'';if(text!==undefined)n.textContent=text;return n;};
 const icon=name=>{const n=el('i','bi bi-'+name);n.setAttribute('aria-hidden','true');return n;};
 const button=(label,ic,action,cls='btn')=>{const n=el('button',cls,label);n.prepend(icon(ic));n.addEventListener('click',action);return n;};
-export function setupSectionsPage({app,trigger,getSections,getSelected,select,getContent,getWorkspace,canEdit,create,rename,createMap,createFolder,openMap,openFolder,beforeOpen,onClose,onChange,toggleSidebar}){
+export function setupSectionsPage({app,trigger,getSections,getSelected,select,getContent,getWorkspace,canEdit,create,rename,createMap,createJson,createFolder,openMap,openFolder,beforeOpen,onClose,onChange,toggleSidebar}){
   let opened=false,detail=false;
   const page=el('section','folder-page sections-page');page.hidden=true;page.setAttribute('aria-label','工作分區');app.querySelector('.main').append(page);
   function hide(){opened=false;page.hidden=true;app.classList.remove('sections-mode');trigger.classList.remove('active');}
@@ -29,10 +29,11 @@ export function setupSectionsPage({app,trigger,getSections,getSelected,select,ge
       body.append(grid);
     }else{
       const add=button('新增心智圖','plus-lg',()=>createMap(),'folder-create-map'),sub=button('新增資料夾','folder-plus',()=>createFolder(),'folder-create-sub');add.disabled=sub.disabled=!canEdit();actions.append(add,sub);
+      const json=button('新增 JSON 心智圖','braces',()=>createJson(),'folder-create-sub');json.disabled=!canEdit();actions.insertBefore(json,sub);
       if(selected){const edit=button('重新命名','pencil',()=>{edit.disabled=true;nameForm(actions,name,n=>rename(selected,n));},'btn btn-ghost');edit.disabled=!canEdit();actions.append(edit);}
       const content=getContent(selected),grid=el('div','folder-grid');body.append(el('h2','folder-section-title','心智圖與資料夾'));
       for(const f of content.folders){const card=button('','folder2',()=>openFolder(f.id),'folder-card folder-card-folder');card.append(el('strong','',f.name),el('span','','資料夾'));grid.append(card);}
-      for(const m of content.maps){const card=button('','diagram-3',()=>openMap(m.id),'folder-card');card.append(el('strong','',m.title||'未命名心智圖'),el('span','','心智圖'));grid.append(card);}
+      for(const m of content.maps){const card=button('',m.kind==='json'?'braces':'diagram-3',()=>openMap(m.id),'folder-card');card.append(el('strong','',m.title||'未命名心智圖'),el('span','',m.kind==='json'?'JSON 心智圖':'心智圖'));grid.append(card);}
       if(!content.folders.length&&!content.maps.length){const empty=el('div','folder-empty-state');empty.append(icon('diagram-3'),el('h2','','從這個分區的第一張心智圖開始'),el('p','','在上方新增心智圖，或建立資料夾整理內容。'));body.append(empty);}else body.append(grid);
     }
     page.append(top,body);

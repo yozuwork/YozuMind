@@ -289,3 +289,18 @@ test('cards and images pinned to a node keep the pin on the renewed node id', ()
   assert.equal(m.cards[1].anchor, undefined);
   assert.deepEqual(m.images[0].anchor, { node: m.root.id, dx: 5, dy: 6 });
 });
+
+test('wireframe components survive backup with kind, copy, size and state, and unknown kinds are rejected',()=>{
+  const source={...map,cards:[
+    {id:'win',type:'wire',kind:'window',x:0,y:0,z:-1,w:720,h:460,text:'https://yozu.app'},
+    {id:'cta',type:'wire',kind:'button',x:40,y:80,z:2,w:128,h:44,text:'立即開始',on:true},
+    {id:'grid',type:'wire',kind:'table',x:40,y:160,w:99999,h:5,text:'A | B\n1 | 2'},
+  ],relations:[{from:'win',to:'cta'}]};
+  const [copy]=parseMaps(serializeMaps([source]),newId), [win,cta,grid]=copy.cards;
+  assert.deepEqual([win.kind,win.text,win.w,win.h,win.z],['window','https://yozu.app',720,460,-1]);
+  assert.equal(cta.on,true); assert.equal(cta.text,'立即開始');
+  assert.deepEqual([grid.w,grid.h],[2400,20]);
+  assert.deepEqual(copy.relations[0],{...copy.relations[0],from:win.id,to:cta.id});
+  assert.throws(()=>parseMaps(serializeMaps([{...map,cards:[{id:'x',type:'wire',kind:'marquee',x:0,y:0}]}]),newId));
+  assert.throws(()=>parseMaps(serializeMaps([{...map,cards:[{id:'c',type:'column',x:0,y:0,cards:[{id:'w',type:'wire',kind:'button'}]}]}]),newId));
+});

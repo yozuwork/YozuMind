@@ -31,14 +31,14 @@ export function persistWorkspaceState(list,id=active) {
 export function archiveWorkspaces(archive) {
   const raw=JSON.parse(archive.text);if(!raw||typeof raw!=='object')throw new Error('存檔內容格式不正確。');
   const maps=Array.isArray(raw)?raw:raw.maps||[raw];if(!Array.isArray(maps))throw new Error('存檔心智圖格式不正確。');
-  const ids=new Set([...maps,...(raw.folders||[]),...(archive.gallery||[]),...(archive.stagePresets||[]),...(archive.notes||[])].map(workspaceOf));
+  const ids=new Set([...maps,...(raw.folders||[]),...(archive.gallery||[]),...(archive.stagePresets||[]),...(archive.notes||[]),...(archive.projects||[])].map(workspaceOf));
   const definitions=validateWorkspaces(archive.workspaces||[]),known=new Map(definitions.map(item=>[item.id,item]));
   for(const id of ids) if(!known.has(id)) known.set(id,{id,name:id===DEFAULT_WORKSPACE?'存檔工作區':'未命名工作區',createdAt:0});
   return [...known.values()];
 }
 export function selectArchiveWorkspace(archive,id) {
   const raw=JSON.parse(archive.text),project=Array.isArray(raw)?{format:'yozumind',version:1,maps:raw}:raw.format?raw:{format:'yozumind',version:1,maps:[raw]};
-  return {...archive,text:JSON.stringify({...project,maps:inWorkspace(project.maps,id),folders:inWorkspace(project.folders||[],id)}),gallery:inWorkspace(archive.gallery||[],id),stagePresets:inWorkspace(archive.stagePresets||[],id),notes:inWorkspace(archive.notes||[],id)};
+  return {...archive,text:JSON.stringify({...project,maps:inWorkspace(project.maps,id),folders:inWorkspace(project.folders||[],id)}),gallery:inWorkspace(archive.gallery||[],id),stagePresets:inWorkspace(archive.stagePresets||[],id),notes:inWorkspace(archive.notes||[],id),projects:inWorkspace(archive.projects||[],id)};
 }
 
 const el=(tag,cls,text)=>{const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;};

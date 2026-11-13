@@ -1,3 +1,4 @@
+import {validateProjects} from './projects.js';
 import {zip,unzip,strToU8,strFromU8} from 'fflate';
 import {MAX_FILE_BYTES,serializeMaps} from './files.js';
 import {normalizeTags,updateImageTags} from './gallery-tags.js';
@@ -23,7 +24,7 @@ export function validateGallery(items) {
 }
 
 // Binary image/file bodies live in real ZIP folders; records hold portable asset references.
-export async function createArchive({maps,folders=[],files={},gallery=[],stagePresets=[],workspaces=[],notes=[]}) {
+export async function createArchive({maps,folders=[],files={},gallery=[],stagePresets=[],workspaces=[],notes=[],projects=[]}) {
   const entries=Object.create(null),assets=new Map();let bytes=0;
   function add(path,data) {bytes+=data.length;if(bytes>MAX_FILE_BYTES) throw new Error('存檔解壓後超過 300 MB，請分別匯出心智圖或減少圖庫圖片。');entries[path]=data;}
   function pack(value) {
@@ -44,6 +45,7 @@ export async function createArchive({maps,folders=[],files={},gallery=[],stagePr
   add('records/project.json',strToU8(JSON.stringify(project,null,2)));
   add('records/gallery.json',strToU8(JSON.stringify(library,null,2)));
   add('records/stage-presets.json',strToU8(JSON.stringify(presets,null,2)));
+  add('records/projects.json',strToU8(JSON.stringify(validateProjects(projects),null,2)));
   add('records/notes.json',strToU8(JSON.stringify(validateNotes(notes),null,2)));
   add('README.txt',strToU8('YoZuMind 可攜式存檔\n\nrecords/：心智圖、物件、角色階段、升級經驗值、圖庫與標籤紀錄。\nimages/：所有圖片（相同圖片共用一份）。\nfiles/：PDF、Word、Excel 等附件。\n\n在其他電腦或 iPhone 開啟 YoZuMind，選擇「匯入存檔」並選取整個 ZIP，不需解壓縮。\n匯入會保留現有資料。\n'));
   const result=await runZip(entries);
@@ -88,6 +90,7 @@ export async function readArchive(file) {
   const project=unpack(json('records/project.json')),gallery=validateGallery(unpack(json('records/gallery.json')));
   const stagePresets=Object.hasOwn(entries,'records/stage-presets.json')?validatePresets(unpack(json('records/stage-presets.json'))):[];
   const notes=Object.hasOwn(entries,'records/notes.json')?validateNotes(json('records/notes.json')):[];
-  if(project.format!=='yozumind'||project.version!==1||!Array.isArray(project.maps)||(!project.maps.length&&!project.folders?.length&&!gallery.length&&!stagePresets.length&&!workspaces.length&&!notes.length)) throw new Error('存檔沒有可還原的資料。');
-  return {text:JSON.stringify(project),gallery,stagePresets,workspaces,notes,zip:true};
+  const projects=Object.hasOwn(entries,'records/projects.json')?validateProjects(json('records/projects.json')):[];
+  if(project.format!=='yozumind'||project.version!==1||!Array.isArray(project.maps)||(!project.maps.length&&!project.folders?.length&&!gallery.length&&!stagePresets.length&&!workspaces.length&&!notes.length&&!projects.length)) throw new Error('存檔沒有可還原的資料。');
+  return {text:JSON.stringify(project),gallery,stagePresets,workspaces,notes,projects,zip:true};
 }

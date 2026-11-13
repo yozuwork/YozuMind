@@ -1,5 +1,6 @@
 import { validDailyDate } from './daily.js';
 import {inboxMeta} from './inbox-state.js';
+import { isWireKind, wireInfo } from './wireframe.js';
 
 export const MAX_FILE_BYTES = 300 * 1024 * 1024;
 
@@ -113,8 +114,8 @@ export function parseMaps(text, newId) {
     return value;
   }
   function card(value, nested) {
-    if (!value || typeof value !== 'object' || !['note','link','todo','column','folder','image','board','file','character'].includes(value.type) ||
-        (nested && ['column','folder'].includes(value.type)) || ++cardCount > 2000) {
+    if (!value || typeof value !== 'object' || !['note','link','todo','column','folder','image','board','file','character','wire'].includes(value.type) ||
+        (nested && ['column','folder','wire'].includes(value.type)) || ++cardCount > 2000) {
       throw new Error('卡片格式不正確，或超過 2,000 張卡片。');
     }
     const result = { id: newId('c'), type: value.type,...readInbox(value) };
@@ -131,6 +132,7 @@ export function parseMaps(text, newId) {
     }
     if (value.type === 'note') {
       result.text = cardText(value.text, 10000);
+      if(value.jsonTree===true)result.jsonTree=true;
       if (value.title) result.title = cardText(value.title, 1000);
       if (Number.isFinite(value.fs) && value.fs >= 11 && value.fs <= 22) result.fs = value.fs;
       if (NOTE_COLORS.includes(value.color)) result.color = value.color;
@@ -176,6 +178,14 @@ export function parseMaps(text, newId) {
       result.src = value.src;
     }
     else if (value.type === 'link') Object.assign(result, { url: cardText(value.url, 2000), title: cardText(value.title, 1000) });
+    else if (value.type === 'wire') {
+      if (!isWireKind(value.kind)) throw new Error('線框元件格式不正確。');
+      const size = wireInfo(value.kind);
+      Object.assign(result, { kind: value.kind, text: cardText(value.text, 5000),
+        w: Number.isFinite(value.w) ? Math.min(2400, Math.max(24, value.w)) : size.w,
+        h: Number.isFinite(value.h) ? Math.min(2400, Math.max(20, value.h)) : size.h });
+      if (value.on === true) result.on = true;
+    }
     else {
       const list = value.type === 'todo' ? value.items : value.cards;
       if (list !== undefined && (!Array.isArray(list) || list.length > 500)) throw new Error('卡片內容格式不正確或超過 500 項。');
@@ -194,6 +204,7 @@ export function parseMaps(text, newId) {
         if (value.type === 'folder') result.open = value.open === true;
       }
     }
+    if(value.type==='image'){for(const key of ['w','h'])if(Number.isFinite(value[key])&&value[key]>0)result[key]=Math.min(10000,value[key]);}
     if (value.collapsed === true && ['note','column'].includes(value.type)) result.collapsed = true;
     if (['note','column','character'].includes(value.type)) {
       if (Number.isFinite(value.w)) result.w = Math.min(1200, Math.max(140, value.w));
@@ -207,6 +218,7 @@ export function parseMaps(text, newId) {
     inboxIds=new Map();
     sourceWorkspace=map.workspaceId||'workspace-default';
     cardCount = 0;
+    if(map.kind==='json'&&(typeof map.jsonSource!=='string'||map.jsonSource.length>200000))throw new Error('JSON 心智圖原始碼格式不正確或超過 200,000 字。');
     const root = map.root === null ? null : node(map.root);
     if (map.trees !== undefined && (!Array.isArray(map.trees) || map.trees.length > 100)) throw new Error('心智圖數量格式不正確或超過 100 個。');
     const trees = (map.trees || []).map(tree => {
@@ -234,6 +246,7 @@ export function parseMaps(text, newId) {
     localCopies.set(newMapIds[i],new Map(ids));
     return {
       id: newMapIds[i], title: map.title, icon: typeof map.icon === 'string' ? map.icon : 'diagram-3',
+      ...(map.kind==='json'?{kind:'json',jsonSource:map.jsonSource}:{}),
       ...(typeof map.workspaceId==='string'&&map.workspaceId.length<=100?{workspaceId:map.workspaceId}:{}),
       ...(validDailyDate(map.dailyDate) ? { dailyDate: map.dailyDate } : {}),
       ...(Array.isArray(map.relatedDates) ? {relatedDates:[...new Set(map.relatedDates.filter(validDailyDate))]} : {}),

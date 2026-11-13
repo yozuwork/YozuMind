@@ -1,17 +1,22 @@
-// Validates and downsizes an image file into a WebP data URL.
+// Keep source bytes: display size must never reduce the saved image resolution.
 export async function readImageFile(file) {
   if(!/^image\/(png|jpeg|webp|gif|bmp|avif)$/.test(file.type)) throw new Error('請使用 PNG、JPEG、WebP 或 GIF 圖片。');
   let bitmap;
   try { bitmap=await createImageBitmap(file); } catch { throw new Error('圖片讀取失敗，請換一張圖片。'); }
-  const scale=Math.min(1,1600/Math.max(bitmap.width,bitmap.height));
-  const buffer=document.createElement('canvas');buffer.width=Math.max(1,Math.round(bitmap.width*scale));buffer.height=Math.max(1,Math.round(bitmap.height*scale));buffer.getContext('2d').drawImage(bitmap,0,0,buffer.width,buffer.height);bitmap.close();
-  return {src:buffer.toDataURL('image/webp',.82),width:buffer.width,height:buffer.height};
+  const width=bitmap.width,height=bitmap.height;bitmap.close();
+  const src=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('圖片讀取失敗。'));reader.readAsDataURL(file);});
+  return {src,width,height};
+}
+
+export function defaultImageSize(width,height){
+  const scale=Math.min(1,360/width,280/height);
+  return {w:width*scale,h:height*scale};
 }
 
 export function imagePlacement(width,height,canvasWidth,canvasHeight,view) {
   if(![width,height,canvasWidth,canvasHeight,view?.k].every(value=>Number.isFinite(value)&&value>0)||![view?.x,view?.y].every(Number.isFinite))throw new Error('請先回到畫布，再加入圖片。');
   const availableWidth=Math.max(1,canvasWidth-64)/view.k,availableHeight=Math.max(1,canvasHeight-144)/view.k;
-  const scale=Math.min(1,360/width,availableWidth/width,availableHeight/height),w=width*scale,h=height*scale;
+  const scale=Math.min(1,360/width,280/height,availableWidth/width,availableHeight/height),w=width*scale,h=height*scale;
   return {x:(canvasWidth/2-view.x)/view.k-w/2,y:(canvasHeight/2-view.y)/view.k-h/2,w,h};
 }
 
@@ -74,7 +79,7 @@ export function setupCanvasAssets({ canvas, world, getMap, getView, uid, snapsho
     if(!drag.changed){snapshot();drag.changed=true;image.z=nextZ();}
     if(drag.corner){
       const sx=drag.corner.includes('w')?-1:1,sy=drag.corner.includes('n')?-1:1;
-      const scale=Math.max(48/Math.max(o.w,o.h),Math.min(4000/o.w,4000/o.h,1+(sx*dx*o.w+sy*dy*o.h)/(o.w*o.w+o.h*o.h)));
+      const scale=Math.max(48/Math.max(o.w,o.h),Math.min(10000/o.w,10000/o.h,1+(sx*dx*o.w+sy*dy*o.h)/(o.w*o.w+o.h*o.h)));
       image.w=o.w*scale;image.h=o.h*scale;image.x=o.x+(sx<0?o.w-image.w:0);image.y=o.y+(sy<0?o.h-image.h:0);
     }else{image.x=o.x+dx;image.y=o.y+dy;hoverDrop(e.clientX,e.clientY);}
     render();onChange();

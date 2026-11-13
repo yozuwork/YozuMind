@@ -1,3 +1,9 @@
+import {setupJsonPage} from './json-page.js';
+import {JSON_SAMPLE} from './json-graph.js';
+import {setupImageTools} from './image-tools.js';
+import {focusViewport,readingViewport} from './viewport.js';
+import {setupProjectsPage} from './projects-page.jsx';
+import {readProjects,importProjects,removeProjects} from './projects.js';
 import {canvasLayers,reorderLayer} from './layers.js';
 import {setupLayers} from './layers-panel.js';
 import {sectionOfFolder,sectionFolders} from './sections.js';
@@ -5,7 +11,7 @@ import {setupSectionsPage} from './sections-page.js';
 import {setupFolderPage} from './folder-page.js';
 import { parseAttachments, parseFolders, parseMaps } from './files.js';
 import { blobToDataUrl, dataUrlToBlob, fileKind, getFile, putFile, deleteFile,MAX_ATTACHMENT_BYTES } from './attachments.js';
-import { setupCanvasAssets,readImageFile,imagePlacement } from './canvas-assets.js';
+import { setupCanvasAssets,readImageFile,imagePlacement,defaultImageSize } from './canvas-assets.js';
 import {setupInbox} from './inbox.js';
 import {inboxEntries,markInbox,clearInbox} from './inbox-state.js';
 import {arrangeRectangles,unionRectangles} from './arrange.js';
@@ -22,6 +28,7 @@ import { characterStage, characterProgress,characterSourceCards,characterSourceM
 import {setupCharactersPage} from './characters-page.js';
 import {listStagePresets,importStagePresets,removeStagePresets} from './stage-presets.js';
 import {setupNotesPage} from './notes-page.js';
+import {setupRailMode} from './wireframe.js';
 import {listNotes,cachedNote,importNotes,removeNotes,remapNoteLinks} from './notes.js';
 import {DEFAULT_WORKSPACE,WORKSPACES_KEY,activeWorkspaceId,workspaceOf,inWorkspace,uniqueWorkspaceName,validateWorkspaces,readWorkspaceState,persistWorkspaceState,archiveWorkspaces,selectArchiveWorkspace,setupWorkspaceMenu,chooseExportWorkspace,chooseImportWorkspace} from './workspaces.js';
 
@@ -62,7 +69,7 @@ const undoS=new Map(), redoS=new Map();
 const mcache=new Map();
 let ready=false;
 let folderBackup=null;
-let assets=null, cards=null, relations=null, draw=null, gallery=null, characterHub=null, galleryPage=null,notesHub=null,inboxHub=null,folderHub=null,sectionsHub=null,layersHub=null;
+let assets=null, cards=null, relations=null, draw=null, gallery=null, characterHub=null, galleryPage=null,notesHub=null,inboxHub=null,folderHub=null,sectionsHub=null,projectsHub=null,layersHub=null,imageTools=null,jsonHub=null;
 
 function ensureKnownWorkspaces() {
   const known=new Set(workspaces.map(item=>item.id));
@@ -73,7 +80,7 @@ function ensureKnownWorkspaces() {
 function switchWorkspace(id) {
   if(!workspaces.some(item=>item.id===id)) throw new Error('找不到這個工作區。');
   if(id===activeWorkspaceId()) return;
-  folderHub?.hide();sectionsHub?.hide();selectedSection=null;
+  folderHub?.hide();sectionsHub?.hide();projectsHub?.hide();selectedSection=null;
   if(editingId)commitEdit();cards?.commit();
   if(currentId)lastWorkspaceMap.set(activeWorkspaceId(),currentId);
   const showCharacters=characterHub?.isOpen(),showGallery=galleryPage?.isOpen(),showNotes=notesHub?.isOpen();characterHub?.hide();galleryPage?.hide();notesHub?.hide();
@@ -352,6 +359,7 @@ function ctxTarget(){
   return null;
 }
 function syncCtxRail(){
+  imageTools?.sync();
   const t=store.readOnly?null:ctxTarget(), rail=$('ctxRail');
   rail.hidden=!t; if(!t) return;
   rail.setAttribute('aria-label',t.kind==='character'?'角色卡工具':'筆記工具');
@@ -368,7 +376,8 @@ function syncCtxRail(){
     const progress=characterProgress(t.card,characterSourceCards(t.card,cur(),inWorkspace([...maps.values()])));
     info.textContent=`每項待辦 10 XP · 目前每 ${progress.required} XP 升一級\n${names.length?'連動：'+names.join('、'):'尚未連動待辦清單'}`;
   }
-  ['smaller','bigger','todo','code'].forEach(k=>show(k,t.kind==='card'&&!t.card.linkedOnly));
+  ['smaller','bigger','todo','code','formatJson','jsonTree'].forEach(k=>show(k,t.kind==='card'&&!t.card.linkedOnly));
+  rail.querySelector('[data-ctx="jsonTree"]').classList.toggle('on',!!t.card?.jsonTree);
   show('title',!character&&!t.card?.linkedOnly);
   if(character) return;
   const titled=t.kind==='card' ? !!t.card.title : noteTitled(t.node);
@@ -409,7 +418,7 @@ listen($('ctxRail'),'click',e=>{
   if(t.kind==='character') cards.characterAction(k);
   else if(t.kind==='card'){
     if(k==='title') cards.toggleTitle(t.card.id);
-    else cards.act(t.card.id, {color:'color',smaller:'fsDown',bigger:'fsUp',todo:'todo',code:'code',delete:'delete'}[k]);
+    else cards.act(t.card.id, {color:'color',smaller:'fsDown',bigger:'fsUp',todo:'todo',code:'code',formatJson:'formatJson',jsonTree:'jsonTree',delete:'delete'}[k]);
   } else {
     if(k==='title') toggleNodeTitle(t.id);
     else if(k==='color'){ selectedId=t.id; renderMap(); nodebar.classList.add('colors'); placeBar(); }
@@ -514,7 +523,26 @@ function ensureVisible(id){
   if(dx||dy){ view.x+=dx; view.y+=dy; applyView(); placeBar(); }
 }
 function zoomAt(px,py,f){ const k=clamp(view.k*f,.2,2.5); f=k/view.k; view.x=px-(px-view.x)*f; view.y=py-(py-view.y)*f; view.k=k; applyView(); placeBar(); }
-function zoomCenter(f){ zoomAt(canvas.clientWidth/2, canvas.clientHeight/2, f); }
+function readingSelection(){
+  if(groupSize())return unionRectangles(groupBoxes());
+  const image=assets?.selection();if(image)return image;
+  const card=cards?.focused();
+  if(card){
+    const element=world.querySelector(`.card[data-id="${CSS.escape(card.id)}"]`);
+    if(element){const rect=element.getBoundingClientRect(),base=canvas.getBoundingClientRect();return {x:(rect.left-base.left-view.x)/view.k,y:(rect.top-base.top-view.y)/view.k,w:rect.width/view.k,h:rect.height/view.k};}
+  }
+  return L.get(selectedId)||null;
+}
+function focusSelection(){
+  const box=readingSelection();if(!box){toast('請先點選要閱讀的筆記、圖片或物件，再按「聚焦選取」。');return;}
+  const target=focusViewport(box,canvas.clientWidth,canvas.clientHeight,{padding:isMobile()?36:64});
+  if(target){Object.assign(view,target);applyView();placeBar();}
+}
+function zoomCenter(f){
+  const box=readingSelection();
+  if(box){const k=clamp(view.k*f,.2,2.5);Object.assign(view,{k,x:canvas.clientWidth/2-(box.x+box.w/2)*k,y:canvas.clientHeight/2-(box.y+box.h/2)*k});applyView();placeBar();}
+  else zoomAt(canvas.clientWidth/2, canvas.clientHeight/2, f);
+}
 
 /* ---------------- node toolbar ---------------- */
 function hideBar(){ nodebar.classList.remove('show','colors','styling'); }
@@ -1020,7 +1048,7 @@ async function stageClipboardImages(files,target){
     const {src,width,height}=await readImageFile(file),map=maps.get(origin.id);if(!map||store.readOnly)return;
     const container=cur()?.id===map.id&&targetId&&allCards(map.cards).find(card=>card.id===targetId);
     if(container){cards.paste({id:uid('c'),type:'image',src},pastePoint(),container.id);continue;}
-    stageClipboard('image',[{id:uid('img'),src,x:0,y:0,w:width,h:height}],file.name||'貼上的圖片',map);
+    stageClipboard('image',[{id:uid('img'),src,x:0,y:0,...defaultImageSize(width,height)}],file.name||'貼上的圖片',map);
   }catch(error){toast(error.message||'圖片讀取失敗，請重試。');}}
 }
 async function stageClipboardFiles(files,target){
@@ -1219,8 +1247,14 @@ async function arrangeCanvas(){
   const requested=cur().id,button=$('arrangeBtn');if(button.disabled)return;button.disabled=true;button.setAttribute('aria-busy','true');
   try{
     await Promise.allSettled([...world.querySelectorAll('img')].map(image=>image.decode()));
+    const naturalSizes=new Map([...world.querySelectorAll('img')].filter(img=>img.naturalWidth).map(img=>[img.src,{w:img.naturalWidth,h:img.naturalHeight}]));
     const map=cur();if(map?.id!==requested||store.readOnly)return;
     if(editingId)commitEdit();cards.commit();draw.exit();clearGroup();renderMap();
+    const imageChanges=[];
+    function defaultSize(image){if(image.inbox)return;const natural=naturalSizes.get(image.src)||image;if(!natural.w||!natural.h)return;const size=defaultImageSize(natural.w,natural.h);if(!image.w||!image.h||Math.abs(size.w-image.w)>.01||Math.abs(size.h-image.h)>.01)imageChanges.push({image,size});}
+    for(const image of map.images||[])defaultSize(image);
+    (function walk(list){for(const card of list||[]){if(card.inbox)continue;if(card.type==='image')defaultSize(card);walk(card.cards);}})(map.cards);
+    if(imageChanges.length){snapshot(undefined,true);for(const {image,size} of imageChanges)Object.assign(image,size);renderMap();}
     const units=[],cardBoxes=new Map(cards.boxes().map(box=>[box.id,box]));
     for(const tree of treesOf(map)){
       const boxes=[treeBox(tree)].filter(Boolean);
@@ -1234,10 +1268,10 @@ async function arrangeCanvas(){
     if(!units.length){toast('目前沒有可排列的物件，可先將暫存內容放到畫布。');return;}
     const positions=arrangeRectangles(units,{width:Math.max(240,canvas.clientWidth-64)}),byId=new Map(units.map(unit=>[unit.id,unit]));
     const changed=positions.some(position=>Math.abs(position.dx)>.1||Math.abs(position.dy)>.1);
-    if(changed){snapshot(undefined,true);for(const position of positions)byId.get(position.id).move(position.dx,position.dy);}
+    if(changed){if(!imageChanges.length)snapshot(undefined,true);for(const position of positions)byId.get(position.id).move(position.dx,position.dy);}
     selectedId=null;cards.deselect();assets.deselect();relations.deselect();renderMap();draw.render(true);
-    const bounds=unionRectangles(positions),largestHeight=Math.max(...positions.map(position=>position.h));view.k=clamp(Math.min(1,(canvas.clientWidth-64)/Math.max(1,bounds.w),(canvas.clientHeight-64)/Math.max(1,largestHeight)),.2,1);view.x=32-bounds.x*view.k;view.y=32-bounds.y*view.k;applyView();placeBar();
-    if(changed)save(map.id);toast(changed?'已從左上角整齊排列，可用 Ctrl / ⌘ + Z 復原。':'已經排列整齊。');
+    Object.assign(view,readingViewport(unionRectangles(positions)));applyView();placeBar();
+    if(changed||imageChanges.length)save(map.id);toast('已靠左上排列，維持 100% 閱讀比例；可拖動畫布查看下方內容。');
   }catch(error){toast(error.message||'排列失敗，請重試。');}
   finally{button.disabled=!ready||store.readOnly||!cur();button.removeAttribute('aria-busy');}
 }
@@ -1465,7 +1499,7 @@ function createPage(){
   const last=sortedMaps().pop(); if(last&&m.createdAt<=last.createdAt) m.createdAt=last.createdAt+1;
   maps.set(m.id,m); save(m.id,true); return m.id;
 }
-function pageInfo(id){ const m=maps.get(id); return m ? {title:m.title, count:(m.cards||[]).filter(card=>!card.inbox).length+(m.images||[]).filter(image=>!image.inbox).length+(m.strokes||[]).filter(stroke=>!stroke.inbox).length+treesOf(m).length} : null; }
+function pageInfo(id){ const m=maps.get(id); return m ? {title:m.title,kind:m.kind, count:(m.cards||[]).filter(card=>!card.inbox).length+(m.images||[]).filter(image=>!image.inbox).length+(m.strokes||[]).filter(stroke=>!stroke.inbox).length+treesOf(m).length} : null; }
 function renamePage(id,title){ const m=maps.get(id); if(!m||store.readOnly||!title||m.title===title) return; m.title=title; save(id); renderSidebar(); }
 function sortedFolders(){ return inWorkspace(folders).sort((a,b)=>a.createdAt-b.createdAt); }
 const folderById=id=>id?folders.find(f=>f.id===id&&workspaceOf(f)===activeWorkspaceId()):undefined;
@@ -1498,7 +1532,7 @@ function pageRow(m, folderId, depth, out, seen=new Set()){
   if(depth) row.style.setProperty('--depth',depth);
   row.draggable=!store.readOnly&&!isSubPage(m)&&!m.dailyDate;
   if(kids.length){ const chev=document.createElement('i'); chev.className='bi bi-chevron-right pchev'; chev.dataset.expand=m.id; chev.title=open?'收合頁面':'展開頁面'; row.setAttribute('aria-expanded',String(open)); row.append(chev); }
-  const i=document.createElement('span'); i.className='pi'; i.innerHTML=kids.length?folderIcon(null,18):stickyIcon(m.color,18);
+  const i=document.createElement('span'); i.className='pi'; i.innerHTML=m.kind==='json'?'<i class="bi bi-braces"></i>':kids.length?folderIcon(null,18):stickyIcon(m.color,18);
   const t=document.createElement('span'); t.className='pt'; t.textContent=m.title||'未命名心智圖';
   row.append(i,t);
   if(kids.length){ const c=document.createElement('span'); c.className='fcount'; c.textContent=String(kids.length); row.append(c); }
@@ -1560,7 +1594,7 @@ function renderSidebar(){
     box.appendChild(d);
   }
   const input=box.querySelector('[data-rename]'); if(input){ input.focus(); input.select(); }
-  $('newBtn').disabled=store.readOnly||!ready;
+  $('newBtn').disabled=$('newJsonBtn').disabled=store.readOnly||!ready;
   $('newFolderBtn').disabled=store.readOnly||!ready;
   const fileBusy=[$('importBtn'),$('exportBtn')].some(button=>button.getAttribute('aria-busy')==='true');
   $('importBtn').disabled=store.readOnly||!ready||fileBusy;
@@ -1582,7 +1616,7 @@ function renderDailyArea(){
   $('dailyControls').hidden=!dailyMode;
   $('dailyBack').hidden=!dailyMode;
   $('dailyContent').hidden=!dailyMode;
-  for(const id of ['newBtn','newFolderBtn','regularHeading','pages']) $(id).hidden=dailyMode;
+  for(const id of ['newBtn','newJsonBtn','newFolderBtn','regularHeading','pages']) $(id).hidden=dailyMode;
   if(validDailyDate(active?.dailyDate)) selectedDailyDate=active.dailyDate;
   $('dailyArea').classList.toggle('active',dailyMode);
   $('dailyOpen').setAttribute('aria-current',dailyMode ? 'page' : 'false');
@@ -1663,6 +1697,7 @@ listen($('searchToggle'),'click',()=>{
 listen($('search'),'keydown',e=>{if(e.key==='Escape'){ $('sidebarSearch').hidden=true; $('searchToggle').setAttribute('aria-expanded','false'); $('search').value='';renderSidebar();$('searchToggle').focus(); }});
 
 listen($('newBtn'), 'click', ()=>createMap(false,folderHub?.current()||selectedSection));
+listen($('newJsonBtn'),'click',()=>createMap(false,folderHub?.current()||selectedSection,'json'));
 listen($('newFolderBtn'), 'click', ()=>createFolder(null,folderHub?.current()||selectedSection));
 
 /* ---------------- folders ---------------- */
@@ -1743,7 +1778,7 @@ async function portableArchive(selected,scope,workspaceId) {
   for(const m of selected)(function walk(list){for(const c of list||[]){if(c.type==='file'&&c.fileId)files[c.fileId]=null;walk(c.cards);}})(m.cards);
   for(const id of Object.keys(files)){const blob=await getFile(id);if(!blob)throw new Error('有附件無法讀取，未產生不完整的備份。請重新加入遺失的附件後再匯出。');files[id]=await blobToDataUrl(blob);}
   const library=await exportGalleryImages(scope==='all'?null:workspaceId),stagePresets=await listStagePresets(scope==='all'?null:workspaceId),notes=await listNotes(scope==='all'?null:workspaceId);
-  return createArchive({maps:selected,folders:exportedFolders,files,gallery:library,stagePresets,workspaces:exportedWorkspaces,notes});
+  return createArchive({maps:selected,folders:exportedFolders,files,gallery:library,stagePresets,workspaces:exportedWorkspaces,notes,projects:inWorkspace(readProjects(),scope==='all'?null:workspaceId)});
 }
 async function exportFile(scope='workspace',workspaceId=activeWorkspaceId()) {
   if([$('exportBtn'),$('importBtn')].some(button=>button.getAttribute('aria-busy')==='true')) return;
@@ -1782,7 +1817,7 @@ listen($('importFile'), 'change', async e=>{
   $('importBtn').disabled=true;
   $('importBtn').setAttribute('aria-busy','true');
   renderSidebar();toast('正在讀取存檔與還原圖片…');
-  let importedGallery=[],storedFiles=[],importedPresets=[],importedMaps=[],importedNotes=[];
+  let importedGallery=[],storedFiles=[],importedPresets=[],importedMaps=[],importedNotes=[],importedProjects=[];
   const originalFolders=[...folders],originalWorkspaces=[...workspaces],originalActive=activeWorkspaceId(),originalCurrent=currentId;let workspaceStateChanged=false,persistedMaps=false;
   try {
     const loaded=await readArchive(file),sources=archiveWorkspaces(loaded),choice=await chooseImportWorkspace(sources,workspaces,activeWorkspaceId());
@@ -1809,6 +1844,7 @@ listen($('importFile'), 'change', async e=>{
     for(const map of imported) {if(map.folderId) {const id=folderIds.get(map.folderId);if(id) map.folderId=id;else delete map.folderId;}}
     importedGallery=await importGalleryImages(archive.gallery.map(image=>({...image,workspaceId:workspaceIds.get(workspaceOf(image))})),uid,null);
     importedPresets=await importStagePresets(archive.stagePresets.map(preset=>({...preset,workspaceId:workspaceIds.get(workspaceOf(preset))})),uid,null);
+    importedProjects=importProjects(archive.projects||[],workspaceIds,uid);
     if(editingId) commitEdit();
     folders=cleanFolders([...folders, ...added]);
     imported.forEach(map=>{ if(map.folderId && !folders.some(f=>f.id===map.folderId)) delete map.folderId; maps.set(map.id,map); });
@@ -1823,6 +1859,7 @@ listen($('importFile'), 'change', async e=>{
     $('search').value='';const firstTarget=workspaceIds.get(selectedSources[0].id);switchWorkspace(firstTarget);if(imported.length)goto(imported[0].id);else renderSidebar();characterHub?.refresh();notesHub?.refresh();
     toast(`已匯入 ${imported.length} 張心智圖${importedGallery.length?`、${importedGallery.length} 張圖庫圖片與標籤`:''}${importedPresets.length?`、${importedPresets.length} 個常用階段`:''}${importedNotes.length?`、${importedNotes.length} 篇筆記與關聯`:''}，原有資料已保留。`);
   } catch(error) {
+    try{if(importedProjects.length)removeProjects(importedProjects);}catch{}
     for(const id of importedMaps)maps.delete(id);folders=originalFolders;
     if(workspaceStateChanged){try{workspaces=persistWorkspaceState(originalWorkspaces,originalActive);}catch{workspaces=originalWorkspaces;}}
     if(persistedMaps){lsSaveAll();await saveFolders();openMap(originalCurrent);}
@@ -1833,9 +1870,10 @@ listen($('importFile'), 'change', async e=>{
   }
 });
 
-function createMap(sample,folderId){
+function createMap(sample,folderId,kind){
   if(store.readOnly||!ready) return;
   const m=makeMap(sample);
+  if(kind==='json'){m.kind='json';m.jsonSource=JSON_SAMPLE;m.root=null;m.title='未命名 JSON 心智圖';m.icon='braces';}
   folderId=folderId||selectedSection;
   if(folderById(folderId)) m.folderId=folderId;
   const last=sortedMaps().pop(); if(last && m.createdAt<=last.createdAt) m.createdAt=last.createdAt+1;
@@ -1855,8 +1893,9 @@ function goto(id){
   if(isMobile()) app.classList.add('side-closed');
 }
 function openMap(id){
+  jsonHub?.hide();
   layerOutline.hidden=true;layerBox=null;
-  folderHub?.hide();sectionsHub?.hide();
+  folderHub?.hide();sectionsHub?.hide();projectsHub?.hide();
   if(editingId) commitEdit();
   if(!maps.has(id)||workspaceOf(maps.get(id))!==activeWorkspaceId()) id=null;
   const changed=id!==currentId;
@@ -1867,14 +1906,21 @@ function openMap(id){
   const m=cur();
   selectedId = m ? firstRootId(m) : null;
   syncHeader(); renderSidebar(); renderMap();
-  if(changed && m) fit();
+  if(m?.kind==='json'){jsonHub?.show(m);return;}
+  if(changed && m){
+    // Card/image workspaces open at reading size; tall notes must not shrink the whole canvas.
+    if((m.cards||[]).some(c=>!c.inbox)||(m.images||[]).some(i=>!i.inbox)){
+      const bb=bbox(),target=readingViewport({x:bb.x0,y:bb.y0});
+      if(target){Object.assign(view,target);applyView();placeBar();}else fit();
+    }else fit();
+  }
 }
 function syncHeader(){
   const m=cur();
   $('arrangeBtn').disabled=!ready||!m||store.readOnly||$('arrangeBtn').getAttribute('aria-busy')==='true';
   $('title').value = m ? (m.title||'') : '';
   $('title').disabled = !m || store.readOnly;
-  $('crumbIcon').innerHTML = stickyIcon(m?.color,20);
+  $('crumbIcon').innerHTML = m?.kind==='json'?'<i class="bi bi-braces"></i>':stickyIcon(m?.color,20);
   const trail=[]; for(let p=isSubPage(m)?maps.get(m.parentId):null, n=0; p&&n<50; p=isSubPage(p)?maps.get(p.parentId):null, n++) trail.unshift(p);
   $('crumbs').replaceChildren(...trail.flatMap(p=>{ const b=document.createElement('button'); b.className='crumb'; b.dataset.goto=p.id; b.textContent=p.title||'未命名心智圖'; b.title='回到「'+b.textContent+'」'; const sep=document.createElement('span'); sep.className='crumb-sep'; sep.textContent='/'; return [b,sep]; }));
   $('crumbs').hidden=!trail.length;
@@ -2049,6 +2095,7 @@ listen($('zRange'),'input',e=>zoomCenter(Number(e.target.value)/100/view.k));
 listen($('zOut'), 'click', ()=>zoomCenter(1/1.2));
 listen($('zLabel'), 'click', ()=>zoomCenter(1/view.k));
 listen($('zFit'), 'click', fit);
+listen($('zFocus'), 'click', focusSelection);
 
 /* empty state */
 function updateEmpty(){
@@ -2173,6 +2220,7 @@ function selectLayer(id,locate=false){
 function nextZ(){ const m=cur(); let z=0; for(const o of [...(m?.images||[]),...(m?.cards||[]),...(m?.strokes||[])]) z=Math.max(z,o.z||0); return z+1; }
 function clearNodeSelection(){ if(editingId) commitEdit(); selectedId=null; for(const el of els.values()) el.classList.remove('sel'); hideBar(); }
 // Drawing goes first, then relations, so their capture-phase pointer handlers win over images and cards.
+const railMode=setupRailMode({board:app.querySelector('.board'),rail:$('toolrail'),toast});disposers.push(()=>railMode.destroy());
 draw=setupDraw({nextZ,canvas,world,button:$('drawBtn'),rail:$('toolrail'),getMap:cur,getView:()=>view,uid,snapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();cards?.deselect();assets?.deselect();relations?.deselect();}});
 relations=setupRelations({canPin:r=>!!relationPin(r),pin:pinFromRelation,canvas,world,button:$('relationBtn'),getMap:cur,getView:()=>view,getBox:id=>pinHidden.has(id)?null:L.get(id)||(cur()?.images||[]).find(i=>i.id===id&&!i.inbox)||cards?.box(id),uid,snapshot,dropSnapshot,save,toast,canEdit:()=>!store.readOnly,clearSelection:()=>{clearNodeSelection();cards?.deselect();assets?.deselect();}});
 assets=setupCanvasAssets({stageImages:stageClipboardImages,receiveImages:(files,target)=>!!cards?.receiveImages(files,target),nextZ,canvas,world,getMap:cur,getView:()=>view,uid,snapshot,save,toast,canEdit:()=>!store.readOnly,clearNodeSelection:()=>{clearNodeSelection();cards?.deselect();relations?.deselect();},onChange:()=>{ relations?.render(); drawPinEdges(); },isHidden:id=>pinHidden.has(id),moved:objectMoved,pinStart,hoverDrop:(x,y)=>cards?.hoverDrop(x,y),dropImage:(x,y,image)=>!!cards?.dropImage(x,y,image)});
@@ -2187,10 +2235,15 @@ layersHub=setupLayers({
   onHide:()=>{layerBox=null;layerOutline.hidden=true;}
 });
 listen($('inboxBtn'),'click',()=>layersHub.hide());
+imageTools=setupImageTools({board:app.querySelector('.board'),getTarget:()=>assets?.selection()||(cards?.focused()?.type==='image'?cards.focused():null),canEdit:()=>!store.readOnly,toast,
+  clear:()=>{assets?.deselect();cards?.deselect();syncCtxRail();},
+  resize:(target,size)=>{snapshot();Object.assign(target,size);save(cur().id);renderMap();cards?.render();syncCtxRail();}
+});
 gallery=setupGallery({trigger:null,uid,toast,canEdit:()=>!!cur()&&!store.readOnly,
   getSelection:()=>{const image=assets?.selection();if(image) return image;const card=cards?.focused();if(card?.type==='image') return card;if(card?.type==='character') {const stage=characterStage(card,characterProgress(card,characterSourceCards(card,cur(),inWorkspace([...maps.values()]))).level);return {src:stage.src,title:stage.name};}return null;},
-  addToCanvas:image=>{const w=Math.min(360,image.width),h=w*image.height/image.width;const r=canvas.getBoundingClientRect();assets.paste({id:uid('img'),src:image.src,w,h},{x:(r.width/2-view.x)/view.k,y:(r.height/2-view.y)/view.k});}
+  addToCanvas:image=>{const {w,h}=defaultImageSize(image.width,image.height);const r=canvas.getBoundingClientRect();assets.paste({id:uid('img'),src:image.src,w,h},{x:(r.width/2-view.x)/view.k,y:(r.height/2-view.y)/view.k});}
 });
+projectsHub=setupProjectsPage({app,trigger:$('projectsBtn'),canEdit:()=>ready&&!store.readOnly,toast,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{if(editingId)commitEdit();cards?.commit();sectionsHub?.hide();folderHub?.hide();characterHub?.hide();galleryPage?.hide();notesHub?.hide();closePops();}});
 sectionsHub=setupSectionsPage({
   app,trigger:$('sectionsBtn'),getSections:()=>sortedFolders().filter(f=>f.kind==='section'),
   getSelected:()=>selectedSection,select:selectSection,
@@ -2209,9 +2262,9 @@ sectionsHub=setupSectionsPage({
     return f.id;
   },
   rename:async(id,name)=>{const f=folderById(id);if(!f||store.readOnly)return false;const old=f.name;f.name=name;if(!await saveFolders()){f.name=old;return false;}renderSidebar();},
-  createMap:()=>createMap(false,selectedSection),createFolder:()=>createFolder(null,selectedSection),
+  createMap:()=>createMap(false,selectedSection),createJson:()=>createMap(false,selectedSection,'json'),createFolder:()=>createFolder(null,selectedSection),
   openMap:goto,openFolder:id=>folderHub.show(id),
-  beforeOpen:()=>{if(editingId)commitEdit();cards?.commit();folderHub?.hide();characterHub?.hide();galleryPage?.hide();notesHub?.hide();closePops();},
+  beforeOpen:()=>{projectsHub?.hide();if(editingId)commitEdit();cards?.commit();folderHub?.hide();characterHub?.hide();galleryPage?.hide();notesHub?.hide();closePops();},
   onChange:()=>{renderSidebar();if(isMobile())app.classList.add('side-closed');},
   onClose:()=>openMap(currentId),toggleSidebar:()=>app.classList.toggle('side-closed')
 });
@@ -2219,25 +2272,25 @@ folderHub=setupFolderPage({
   app,getFolder:folderById,getFolders:childFolders,
   getMaps:id=>sortedMaps().filter(m=>m.folderId===id&&!isSubPage(m)&&!m.dailyDate),
   canEdit:()=>ready&&!store.readOnly,
-  beforeOpen:()=>{sectionsHub?.hide();if(editingId)commitEdit();cards?.commit();characterHub?.hide();galleryPage?.hide();notesHub?.hide();closePops();},
+  beforeOpen:()=>{sectionsHub?.hide();projectsHub?.hide();if(editingId)commitEdit();cards?.commit();characterHub?.hide();galleryPage?.hide();notesHub?.hide();closePops();},
   onChange:()=>{selectedSection=sectionOfFolder(folderHub.current(),inWorkspace(folders));renderSidebar();if(isMobile())app.classList.add('side-closed');},
-  onClose:()=>openMap(currentId),onCreateMap:id=>createMap(false,id),
+  onClose:()=>openMap(currentId),onCreateMap:id=>createMap(false,id),onCreateJson:id=>createMap(false,id,'json'),
   onCreateFolder:id=>{createFolder(null,id);app.classList.remove('side-closed');},
   onRename:(id,name)=>{const f=folderById(id);if(f&&!store.readOnly){f.name=name;saveFolders();renderSidebar();}},
   onMenu:(id,anchor)=>{folderFor=id;folderAnchor=anchor;showPop($('folderMenu'),anchor);},
   onSection:id=>{selectSection(id);sectionsHub.show(true);},
   onOpenMap:goto,toggleSidebar:()=>app.classList.toggle('side-closed')
 });
-characterHub=setupCharactersPage({app,trigger:$('charactersBtn'),getMaps:()=>inWorkspace([...maps.values()]),uid,toast,canEdit:()=>ready&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{sectionsHub?.hide();folderHub?.hide();renderDailyArea();galleryPage?.hide();notesHub?.hide();},
+characterHub=setupCharactersPage({app,trigger:$('charactersBtn'),getMaps:()=>inWorkspace([...maps.values()]),uid,toast,canEdit:()=>ready&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{sectionsHub?.hide();projectsHub?.hide();folderHub?.hide();renderDailyArea();galleryPage?.hide();notesHub?.hide();},
   onEdit:(mapId,id)=>{characterHub.hide();goto(mapId);cards.editCharacterStages(id);characterHub.show();},
   onLocate:(mapId,id)=>{goto(mapId);const box=cards.focusCharacter(id);if(box){view.x=canvas.clientWidth/2-(box.x+box.w/2)*view.k;view.y=canvas.clientHeight/2-(box.y+box.h/2)*view.k;applyView();}},
   onCreate:preset=>{characterHub.hide();if(!cur())createMap(false);const id=cards.createCharacterFromPreset(preset);if(id){characterHub.show();cards.editCharacterStages(id);}}
 });
-galleryPage=setupGalleryPage({app,trigger:$('galleryBtn'),uid,toast,canUse:()=>!!cur()&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{sectionsHub?.hide();folderHub?.hide();renderDailyArea();if(editingId)commitEdit();cards?.commit();characterHub?.hide();notesHub?.hide();},
+galleryPage=setupGalleryPage({app,trigger:$('galleryBtn'),uid,toast,canUse:()=>!!cur()&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{sectionsHub?.hide();projectsHub?.hide();folderHub?.hide();renderDailyArea();if(editingId)commitEdit();cards?.commit();characterHub?.hide();notesHub?.hide();},
   getSelection:()=>{const image=assets?.selection();if(image)return image;const card=cards?.focused();if(card?.type==='image')return card;if(card?.type==='character'){const stage=characterStage(card,characterProgress(card,characterSourceCards(card,cur(),inWorkspace([...maps.values()]))).level);return {src:stage.src,title:stage.name};}return null;},
-  onUse:image=>{const w=Math.min(360,image.width),h=w*image.height/image.width;assets.paste({id:uid('img'),src:image.src,w,h},{x:(canvas.clientWidth/2-view.x)/view.k,y:(canvas.clientHeight/2-view.y)/view.k});}
+  onUse:image=>{const {w,h}=defaultImageSize(image.width,image.height);assets.paste({id:uid('img'),src:image.src,w,h},{x:(canvas.clientWidth/2-view.x)/view.k,y:(canvas.clientHeight/2-view.y)/view.k});}
 });
-notesHub=setupNotesPage({app,trigger:$('notesBtn'),uid,toast,canEdit:()=>ready&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{sectionsHub?.hide();folderHub?.hide();renderDailyArea();if(editingId)commitEdit();cards?.commit();galleryPage?.hide();characterHub?.hide();},
+notesHub=setupNotesPage({app,trigger:$('notesBtn'),uid,toast,canEdit:()=>ready&&!store.readOnly,toggleSidebar:()=>app.classList.toggle('side-closed'),beforeOpen:()=>{sectionsHub?.hide();projectsHub?.hide();folderHub?.hide();renderDailyArea();if(editingId)commitEdit();cards?.commit();galleryPage?.hide();characterHub?.hide();},
   getBacklinks:id=>{const result=[];for(const map of inWorkspace([...maps.values()])){const walk=list=>{for(const card of list||[]){if(card.noteIds?.includes(id))result.push({mapId:map.id,cardId:card.id,mapTitle:map.title,title:card.title||card.text?.slice(0,40)||(card.type==='character'?'角色卡':'關聯筆記卡'),type:card.type});walk(card.cards);}};walk(map.cards);}return result;},
   onLocate:(mapId,id)=>{goto(mapId);const box=cards.focusCard(id);if(box){view.x=canvas.clientWidth/2-(box.x+box.w/2)*view.k;view.y=canvas.clientHeight/2-(box.y+box.h/2)*view.k;applyView();}},
   onInsert:note=>{notesHub.hide();if(!cur())createMap(false);cards.insertLinkedNote(note);}
@@ -2257,12 +2310,30 @@ folderBackup=setupFolderBackup({trigger:$('folderBackupBtn'),summary:$('folderBa
     return portableArchive(structuredClone([...maps.values()]),'all',null);
   }
 });
-for(const type of ['yozu-gallery-changed','yozu-notes-changed','yozu-presets-changed'])listen(window,type,()=>folderBackup?.changed());
+for(const type of ['yozu-gallery-changed','yozu-notes-changed','yozu-presets-changed','yozu-projects-changed'])listen(window,type,()=>folderBackup?.changed());
 // Card and node editors can hold changes before their normal blur/commit save.
 listen(world,'input',()=>folderBackup?.changed());
 disposers.push(()=>folderBackup?.destroy());
+jsonHub=setupJsonPage({app,getMap:id=>maps.get(id),canEdit:()=>ready&&!store.readOnly,save:id=>save(id),toast,
+  copyPage:async id=>{
+    const map=maps.get(id);if(!map)return;
+    const text=`YoZu JSON 心智圖：${map.title} (${id})`;
+    try{await navigator.clipboard.writeText(text);clip={kind:'card',items:[{id:uid('c'),type:'board',mapId:id,title:map.title,x:0,y:0}],text};toast('已複製頁面卡片，切到一般心智圖按 Ctrl / ⌘ + V 貼上。');}
+    catch{toast('無法存取剪貼簿，請使用「放入一般心智圖」。');}
+  },
+  embedPage:id=>{
+    if(store.readOnly||!ready)return;
+    const source=maps.get(id),targets=sortedMaps().filter(m=>m.kind!=='json');
+    if(!source)return;if(!targets.length){toast('請先建立一張一般心智圖，再放入 JSON 頁面卡片。');return;}
+    const dialog=document.createElement('dialog');dialog.className='workspace-dialog';dialog.setAttribute('aria-label','放入一般心智圖');
+    const title=document.createElement('h2');title.textContent='放入一般心智圖';const select=document.createElement('select');select.setAttribute('aria-label','目標心智圖');for(const map of targets)select.add(new Option(map.title||'未命名心智圖',map.id));
+    const footer=document.createElement('div');footer.className='workspace-dialog-actions';const cancel=document.createElement('button');cancel.className='btn';cancel.textContent='取消';cancel.onclick=()=>dialog.close();
+    const submit=document.createElement('button');submit.className='btn workspace-primary';submit.textContent='放入頁面卡片';submit.onclick=()=>{const target=maps.get(select.value);if(store.readOnly||!target||workspaceOf(target)!==workspaceOf(source))return;dialog.close();goto(target.id);cards.paste({id:uid('c'),type:'board',mapId:id,title:source.title,x:0,y:0},pastePoint());renderSidebar();toast('已放入 JSON 頁面卡片，雙擊即可開啟。');};
+    const isolate=e=>{if(dialog.contains(e.target))e.stopPropagation();};window.addEventListener('keydown',isolate,true);dialog.addEventListener('close',()=>{window.removeEventListener('keydown',isolate,true);dialog.remove();});footer.append(cancel,submit);dialog.append(title,select,footer);document.body.append(dialog);dialog.showModal();
+  }
+});
 init();
 
 // Remove everything this run drew so a hot reload or remount starts from a clean canvas.
-return () => { for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; edgeLabels.remove(); groupLayer.remove(); pinEdges.remove(); nodeGrip.remove(); hideBar(); ghost?.remove(); workspaceMenu?.destroy(); layersHub?.destroy();layerOutline.remove();sectionsHub?.destroy();folderHub?.destroy(); inboxHub?.destroy(); notesHub?.destroy(); galleryPage?.destroy(); characterHub?.destroy(); gallery.destroy(); draw?.destroy(); relations?.destroy(); cards?.destroy(); assets?.destroy(); disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
+return () => { for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; edgeLabels.remove(); groupLayer.remove(); pinEdges.remove(); nodeGrip.remove(); hideBar(); ghost?.remove(); workspaceMenu?.destroy(); layersHub?.destroy();layerOutline.remove();jsonHub?.destroy();imageTools?.destroy();projectsHub?.destroy();sectionsHub?.destroy();folderHub?.destroy(); inboxHub?.destroy(); notesHub?.destroy(); galleryPage?.destroy(); characterHub?.destroy(); gallery.destroy(); draw?.destroy(); relations?.destroy(); cards?.destroy(); assets?.destroy(); disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
 }
