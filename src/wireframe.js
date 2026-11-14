@@ -7,6 +7,9 @@ const bi = name => `<i class="bi bi-${name}" aria-hidden="true"></i>`;
 //   multi: the text editor takes several lines; frame: sits under other objects and carries them when dragged;
 //   state: has an on/off state (primary button, checked box…).
 export const WIRE_KINDS = [
+  ['music-card','影音卡片',bi('music-note-beamed'),'cards',340,490,'',{frame:true}],
+  ['manga-card','漫畫卡片',bi('book'),'cards',340,510,'',{frame:true}],
+  ['basic-card','基本卡片',bi('card-heading'),'cards',340,450,'',{frame:true}],
   ['window','視窗',bi('window'),'layout',720,460,'https://yozu.app',{frame:true}],
   ['navbar','導覽列',bi('menu-button-wide'),'layout',640,56,'YoZu\n首頁\n產品\n價格\n聯絡我們',{multi:true}],
   ['panel','容器',bi('square'),'layout',300,220,'卡片標題',{frame:true}],
@@ -26,7 +29,7 @@ export const WIRE_KINDS = [
   ['toggle','開關',bi('toggle-on'),'form',170,30,'接收通知',{state:true}],
   ['slider','滑桿',bi('sliders2'),'form',240,30,''],
 ];
-export const WIRE_GROUPS = [['layout','版面'],['content','內容'],['form','表單']];
+export const WIRE_GROUPS = [['cards','卡片'],['layout','版面'],['content','內容'],['form','表單']];
 const INFO = Object.fromEntries(WIRE_KINDS.map(([kind,label,icon,group,w,h,text,opts={}])=>[kind,{kind,label,icon,group,w,h,text,...opts}]));
 export const wireInfo = kind => INFO[kind] || INFO.panel;
 export const isWireKind = kind => Object.hasOwn(INFO, kind);
@@ -54,6 +57,27 @@ const toggleBtn = (cls, label, on) => { const b=el('button',cls+' wf-box'); b.ty
 export function renderWire(card) {
   const body=el('div',`wf-body wf-${card.kind}`+(card.on?' on':'')), t=card.text||'';
   switch(card.kind) {
+    case 'music-card': case 'manga-card': case 'basic-card': {
+      const box=el('div','wf-template '+card.kind);
+      const add=(cls,text)=>box.append(el('div',cls,text));
+      add('wf-cover',card.kind==='music-card'?'♫  Video / Image':card.kind==='manga-card'?'書籍封面':'Image cap');
+      if(card.kind==='music-card') {
+        add('wf-card-title','ハッピーシンセサイザ'); add('wf-card-heart','♡');
+        add('wf-card-subtitle','Remix 中谷'); add('wf-card-tags','#エモい   #CHILL   #專注');
+        add('wf-card-action','▣  超時空輝耀姬！'); add('wf-card-meta','● 作業用  ● BGM');
+        add('wf-card-note','沒有備註'); add('wf-card-more','•••');
+      } else if(card.kind==='manga-card') {
+        add('wf-card-badge','追漫中'); add('wf-card-title','深夜心頻率');
+        add('wf-card-subtitle','日常療癒・戀愛・成長'); add('wf-card-link','↗  實體書傳送門');
+        add('wf-card-action','▷  閱讀漫畫'); add('wf-card-meta','已讀 1 話                 連載中・共 49 話');
+        add('wf-card-progress','');
+      } else {
+        add('wf-card-title','卡片標題');
+        add('wf-card-description','以下是一些簡短的範例文本，用於補充卡片標題並構成卡片的大部分內容。');
+        add('wf-card-action','去某個地方');
+      }
+      body.append(box); break;
+    }
     case 'window': {
       const frame=el('div','wf-window wf-box'), chrome=el('div','wf-chrome'), dots=el('span','wf-dots');
       dots.append(el('i','wf-box'),el('i','wf-box'),el('i','wf-box'));
@@ -124,6 +148,15 @@ export function renderWire(card) {
     }
     default: body.append(el('div','wf-panel wf-box'));
   }
+  // Stable part keys keep edits and positions through redraws and persistence.
+  const selector='.wf-template > div,.wf-clip,.wf-heading,.wf-text,.wf-panel-head,.wf-brand b,.wf-cap,.wf-label,.wf-mark,.wf-avatar,.wf-track,.wf-logo,.wf-menu,.wf-dots,.wf-cells > span';
+  [...body.querySelectorAll(selector)].filter(n=>!n.querySelector(selector)).forEach((node,index)=>{
+    const key=String(index), part=card.parts?.[key];
+    node.dataset.wirePart=key;
+    node.title='拖曳移動 · 點兩下編輯';
+    if(part?.text!==undefined) node.textContent=part.text;
+    if(part) node.style.translate=`${part.x||0}px ${part.y||0}px`;
+  });
   return body;
 }
 

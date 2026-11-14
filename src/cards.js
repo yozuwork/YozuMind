@@ -118,6 +118,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
   const on = (target, name, fn, options) => { target.addEventListener(name, fn, options); listeners.push(() => target.removeEventListener(name, fn, options)); };
   const layer = h('div','card-layer'); world.append(layer);
   const picker = h('input'); picker.type='file'; picker.accept='image/png,image/jpeg,image/webp,image/gif,image/bmp,image/avif'; picker.multiple=true; picker.hidden=true; document.body.append(picker);
+  let wirePartDrag=null, wirePartEdit=null;
   let selected=null, editing=null, editFresh=false, editBefore='', drag=null, resize=null, tool=null, mapId=null, colorOpen=null, viewOpen=null, pickFor=null;
   let characterMenu=null;
   const imageHover={over:null};
@@ -353,7 +354,8 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       el.append(renderWire(card));
       if(edit) {
         const info=wireInfo(card.kind), box=h('div','wire-editor'), multi=!!info.multi;
-        const f=field(multi?'textarea':'input','wire-input',card.text,info.label+'文字',{field:'text'});
+        const part=wirePartEdit?.id===card.id?wirePartEdit:null;
+        const f=field(multi||part?'textarea':'input','wire-input',part?(card.parts?.[part.key]?.text??part.text):card.text,info.label+'文字',part?{wirePartField:part.key,field:'text'}:{field:'text'});
         if(multi) f.rows=Math.min(8,Math.max(2,(card.text||'').split('\n').length));
         box.append(h('span','wire-editor-label',info.label), f, h('span','wire-editor-hint',(WIRE_EDIT_HINT[card.kind]||(multi?'Enter 換行':'Enter 完成'))+' · Esc 完成'));
         el.append(box);
@@ -640,7 +642,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     snapshot(); refresh(true); focusEditor();
   }
   function commit() {
-    if(!editing) return; const id=editing; editing=null;
+    if(!editing) return; const id=editing; editing=null; wirePartEdit=null;
     const map=getMap(), loc=locate(map,id);
     if(loc) {
       tidy(loc.card);
@@ -692,6 +694,15 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     const el=e.target.closest('.card');
     if(!el) { if(selected && !e.target.closest('.zoombar,.asset-panel')) { selected=null; render(); } return; }
     const id=el.dataset.id;
+    const part=e.target.closest('[data-wire-part]');
+    if(part && canEdit() && editing!==id && !e.target.closest('.card-resize')) {
+      e.preventDefault();
+      if(editing) commit();
+      const card=locate(getMap(),id)?.card, key=part.dataset.wirePart, old=card.parts?.[key]||{};
+      wirePartDrag={id,key,pointer:e.pointerId,sx:e.clientX,sy:e.clientY,x:old.x||0,y:old.y||0,node:part,moved:false};
+      return;
+    }
+
     if(e.target.closest('.card-resize') && canEdit()) {
       e.preventDefault(); const card=locate(getMap(),id)?.card;
       if(card) { const b=boxOf(el); resize={id, pointer:e.pointerId, sx:e.clientX, sy:e.clientY, w:card.w||b.w, h:['board','wire'].includes(card.type)?card.h||b.h:b.h, min:MIN_SIZE[card.type], moved:false}; }
@@ -729,6 +740,16 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     for(const c of carry) { c.el=cardEl(c.card.id); c.el?.classList.add('carried'); }
   }
   on(window,'pointermove',e=>{
+    if(wirePartDrag && e.pointerId===wirePartDrag.pointer) {
+      const d=wirePartDrag, dx=(e.clientX-d.sx)/getView().k, dy=(e.clientY-d.sy)/getView().k;
+      if(!d.moved && Math.hypot(dx,dy)<4) return;
+      if(!d.moved) { snapshot(); d.moved=true; }
+      const card=locate(getMap(),d.id)?.card; if(!card) return;
+      card.parts ||= {}; const part=card.parts[d.key] ||= {};
+      part.x=snap(d.x+dx,e.altKey); part.y=snap(d.y+dy,e.altKey);
+      d.node.style.translate=`${part.x}px ${part.y}px`; onChange(); return;
+    }
+
     if(resize && e.pointerId===resize.pointer) {
       const card=locate(getMap(),resize.id)?.card, el=cardEl(resize.id), k=getView().k; if(!card || !el) return;
       if(!resize.moved) { snapshot(); resize.moved=true; }
@@ -777,6 +798,11 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     onChange();
   });
   function end(e) {
+    if(wirePartDrag && e.pointerId===wirePartDrag.pointer) {
+      const d=wirePartDrag; wirePartDrag=null;
+      if(d.moved) save(getMap().id);
+      return;
+    }
     if(resize && e.pointerId===resize.pointer) { const r=resize; resize=null; if(r.moved) save(getMap().id); return; }
     if(tool && e.pointerId===tool.pointer) {
       const t=tool; tool=null; t.over?.classList.remove('drop');
@@ -829,6 +855,12 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
   /* ---------- inputs and buttons inside cards ---------- */
   on(layer,'input',e=>{
     const f=e.target, loc=locate(getMap(),f.closest('.card')?.dataset.id); if(!loc) return;
+    if(f.dataset.wirePartField!==undefined && loc.card.type==='wire') {
+      loc.card.parts ||= {}; const part=loc.card.parts[f.dataset.wirePartField] ||= {};
+      part.text=f.value;
+      cardEl(loc.card.id)?.querySelector(':scope > .wf-body')?.replaceWith(renderWire(loc.card));
+      onChange(); return;
+    }
     if(f.dataset.item) { const item=loc.card.items.find(i=>i.id===f.dataset.item); if(item) item.text=f.value; }
     else if(f.dataset.field && loc.card.type==='wire') { loc.card.text=f.value; cardEl(loc.card.id)?.querySelector(':scope > .wf-body')?.replaceWith(renderWire(loc.card)); if(f.tagName==='TEXTAREA') f.rows=Math.min(8,Math.max(2,f.value.split('\n').length)); onChange(); return; }
     else if(f.dataset.field) { loc.card[f.dataset.field]=f.value; if(loc.card.type==='character' && f.dataset.field==='title' && loc.card.stages?.length) currentStage(loc.card).name=f.value; }
@@ -990,6 +1022,13 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     else if(b.dataset.cardAct==='delete') remove(card.id);
   });
   on(layer,'dblclick',e=>{
+    const part=e.target.closest('[data-wire-part]'), host=part?.closest('.card');
+    if(part && host && canEdit()) {
+      const key=part.dataset.wirePart, text=part.textContent;
+      if(editing) commit();
+      wirePartEdit={id:host.dataset.id,key,text}; startEdit(host.dataset.id); return;
+    }
+
     const el=e.target.closest('.card'); if(!el || editing===el.dataset.id || e.target.closest('a,button,input,textarea,select,summary,label')) return;
     const card=locate(getMap(),el.dataset.id)?.card;
     if(card?.type==='board') openPageOf(card); else if(card?.type==='file') openFile(card,false); else if(card?.type!=='folder') startEdit(el.dataset.id);

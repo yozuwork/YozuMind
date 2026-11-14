@@ -1,3 +1,28 @@
+/* Editable UI template parts */
+[data-wire-part]{position:relative;cursor:move;touch-action:none}
+[data-wire-part]:hover{outline:1px dashed var(--accent);outline-offset:3px;z-index:2}
+.wf-template{position:relative;width:100%;height:100%;border:3px solid #222;border-radius:18px;background:#fffdf7;color:#20201e;box-shadow:5px 6px 0 #333;font-family:var(--font);padding:0 22px;display:flex;flex-direction:column;gap:12px}
+.wf-template .wf-cover{flex:none;height:36%;margin:0 -22px 8px;border-bottom:3px solid #222;border-radius:14px 14px 0 0;background:linear-gradient(135deg,#c7d8d6,#8babb1);display:grid;place-items:center;font-size:24px;color:#fff;min-height:90px}
+.wf-card-title{font-size:23px;font-weight:800;line-height:1.4}
+.music-card .wf-card-title{padding-right:25px}
+.wf-card-heart{position:absolute;right:20px;top:40%;font-size:32px;color:#827e72}
+.wf-card-subtitle{font-size:16px;color:#8c897c}
+.wf-card-tags{padding:9px 8px;background:#efcbd3;border-radius:5px;font-size:14px;font-weight:700;align-self:flex-start}
+.wf-card-action{padding:10px 15px;border:2px solid #ccc9bf;border-radius:24px;font-weight:700;align-self:flex-start}
+.wf-card-meta{font-size:13px;font-weight:700;color:#777468}
+.wf-card-note{border-top:2px dashed #d5d1c7;margin-top:auto;padding:20px 0;color:#99968c;font-style:italic}
+.wf-card-more{position:absolute;right:22px;bottom:18px;border:2px solid #d5d1c7;border-radius:8px;padding:9px}
+.manga-card{border-radius:5px;gap:16px}
+.manga-card .wf-cover{height:44%;border-radius:0;background:linear-gradient(110deg,#edf0df 20%,#5b858c 20%,#7399a0 80%,#edf0df 80%)}
+.wf-card-badge{position:absolute;top:37%;left:12px;background:#93b8d4;border:2px solid #222;border-radius:9px;padding:5px 18px;font-size:21px;font-weight:800}
+.wf-card-link{padding:10px;background:#faedbd;border:2px dashed #222;border-radius:10px;font-weight:700}
+.manga-card .wf-card-action{align-self:stretch;text-align:center;border:3px solid #222;border-radius:12px;background:#edcb48;margin-top:auto;font-size:19px}
+.wf-card-progress{height:10px;min-height:10px;border:3px solid #222;border-radius:10px;background:linear-gradient(to right,#edcb48 65%,transparent 65%);margin-bottom:18px}
+.basic-card{border:1px solid #d5d7da;border-radius:5px;box-shadow:none;padding:0 20px;gap:18px;background:white;color:#292d32}
+.basic-card .wf-cover{margin:0 -20px 0;height:45%;background:#899198;border:0;border-radius:4px 4px 0 0;font-size:27px;color:#e0e3e7}
+.basic-card .wf-card-title{font-size:24px;font-weight:500}
+.wf-card-description{font-size:18px;line-height:1.65}
+.basic-card .wf-card-action{border:0;border-radius:5px;background:#0d6efd;color:white;font-weight:400;font-size:19px;margin-bottom:20px}
 /* ---------- Wireframe mode: hand-drawn UI components ---------- */
 :root{
   --wf-font:"Patrick Hand","LXGW WenKai TC","Comic Sans MS","Microsoft JhengHei",cursive;
