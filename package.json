@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist"
+    "deploy": "gh-pages -d dist",
+    "auto": "node scripts/auto.mjs"
   },
   "dependencies": {
     "bootstrap-icons": "^1.13.1",
