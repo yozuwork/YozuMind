@@ -1579,7 +1579,7 @@ function pageRow(m, folderId, depth, out, seen=new Set()){
   const row=document.createElement('div'); row.className='page'+(!folderHub?.isOpen()&&(m.id===currentId||hiddenCurrent)?' active':'')+(depth?' nested':'')+(isSubPage(m)?' subpage':'')+(kids.length?' has-pages':'')+(open?' open':''); row.dataset.id=m.id; row.tabIndex=0; row.setAttribute('role','button');
   if(folderId) row.dataset.folder=folderId;
   if(depth) row.style.setProperty('--depth',depth);
-  row.draggable=!store.readOnly&&!isSubPage(m)&&!m.dailyDate;
+  row.draggable=!store.readOnly&&!m.dailyDate;
   if(kids.length){ const chev=document.createElement('i'); chev.className='bi bi-chevron-right pchev'; chev.dataset.expand=m.id; chev.title=open?'收合頁面':'展開頁面'; row.setAttribute('aria-expanded',String(open)); row.append(chev); }
   const i=document.createElement('span'); i.className='pi'; i.innerHTML=m.kind==='json'?'<i class="bi bi-braces"></i>':kids.length?folderIcon(null,18):stickyIcon(m.color,18);
   const t=document.createElement('span'); t.className='pt'; t.textContent=m.title||'未命名心智圖';
@@ -1792,27 +1792,59 @@ function deleteFolder(id){
 }
 // Drag a mind map or folder row onto a folder (or onto loose space to take it out).
 let dragItem=null;
-function dropFolderAt(target){ const el=target.closest?.('[data-folder]'); return el?el.dataset.folder:null; }
-// undefined means the drop is not allowed (a folder into itself or its descendants).
-function dropTargetFor(target){ const fid=dropFolderAt(target); return dragItem?.kind==='folder'&&fid&&isFolderInside(fid,dragItem.id) ? undefined : fid; }
-function clearDropMarks(){ $('pages').classList.remove('drop-root'); $('pages').querySelectorAll('.drop').forEach(el=>el.classList.remove('drop')); }
+// Where a sidebar drag would land. The middle of a row puts the item inside that row (folder, or map as sub-page);
+// its top or bottom edge puts the item at the same level as that row. Loose space means the outermost level.
+// Returns {folder} (null = outermost), {nest: mapId}, or null when the drop is not allowed.
+function dropSpot(e){
+  const el=e.target.closest?.('.page,.folder-row,.folder-empty'), item=dragItem; if(!item) return null;
+  const dragged=item.kind==='map'?maps.get(item.id):folderById(item.id); if(!dragged) return null;
+  let spot={folder:null};
+  if(el){
+    const r=el.getBoundingClientRect(), rel=(e.clientY-r.top)/(r.height||1), edge=el.classList.contains('folder-empty')?null:rel<.28?'before':rel>.72?'after':null;
+    if(el.classList.contains('folder-empty')) spot={folder:el.dataset.folder};
+    else if(el.classList.contains('folder-row')){
+      const f=folderById(el.dataset.folder);
+      spot=edge ? {folder:f?.parentId||null, el, edge} : {folder:el.dataset.folder, el};
+    } else {
+      const m=maps.get(el.dataset.id);
+      if(!m) return null;
+      if(!edge && item.kind==='map' && m.id!==item.id) spot={nest:m.id, el};
+      else if(isSubPage(m)) spot=item.kind==='map' ? {nest:m.parentId, el, edge:edge||'after'} : {folder:maps.get(topPageOf(m.id))?.folderId||null, el, edge:edge||'after'};
+      else spot={folder:m.folderId||null, el, edge:edge||'after'};
+    }
+  }
+  if('nest' in spot){
+    const t=maps.get(spot.nest); if(!t||t.id===item.id||!canNestMap(dragged,t)) return null;
+    if(isSubPage(dragged)&&dragged.parentId===t.id) return spot.edge?{...spot,same:true}:null;
+    return spot;
+  }
+  if(spot.folder&&!folderById(spot.folder)) spot.folder=null;
+  if(item.kind==='folder'&&spot.folder&&isFolderInside(spot.folder,item.id)) return null;
+  return spot;
+}
+function clearDropMarks(){ $('pages').classList.remove('drop-root'); $('pages').querySelectorAll('.drop,.drop-before,.drop-after').forEach(el=>el.classList.remove('drop','drop-before','drop-after')); }
 listen($('pages'), 'dragstart', e=>{
   const fr=e.target.closest?.('.folder-row'), row=e.target.closest?.('.page');
   if(store.readOnly||(!fr&&!row)){ e.preventDefault(); return; }
   dragItem=fr?{kind:'folder',id:fr.dataset.folder}:{kind:'map',id:row.dataset.id};
   e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',dragItem.id); (fr||row).classList.add('dragging');
 });
-// A map row dropped onto another map row becomes that map's sub-page (via a page card on its canvas).
-function dropMapTarget(target){
-  if(dragItem?.kind!=='map') return null;
-  const row=target.closest?.('.page'), t=row&&maps.get(row.dataset.id), m=maps.get(dragItem.id);
-  if(!t||!m||t.id===m.id) return null;
-  return t;
-}
 function canNestMap(m, t){ return !store.readOnly&&t.kind!=='json'&&workspaceOf(t)===workspaceOf(m)&&!containsPage(m,t.id)&&!pageTree(m).some(x=>x.id===t.id); }
+// Takes a sub-page out of its parent map: its page cards and node links there go away, the page itself stays.
+function detachPage(m){
+  const p=m&&maps.get(m.parentId); if(!p) { if(m) delete m.parentId; return; }
+  snapshot(p.id);
+  p.cards=(function strip(list){ return (list||[]).filter(c=>!(c.type==='board'&&c.mapId===m.id)).map(c=>{ if(c.cards) c.cards=strip(c.cards); return c; }); })(p.cards);
+  for(const t of treesOf(p)) (function walk(n){ if(!n) return; if(n.page===m.id) delete n.page; n.children.forEach(walk); })(t.root);
+  delete m.parentId;
+  save(p.id,true);
+  if(p.id===currentId) renderMap();
+}
 function nestMap(id, targetId){
   const m=maps.get(id), t=maps.get(targetId); if(!m||!t||!canNestMap(m,t)) return;
+  if(isSubPage(m)&&m.parentId===t.id) return;
   if(editingId) commitEdit(); cards?.commit();
+  if(isSubPage(m)) detachPage(m);
   snapshot(t.id);
   t.cards=t.cards||[];
   let x=0, y=0, any=false;
@@ -1824,23 +1856,34 @@ function nestMap(id, targetId){
   if(t.id===currentId) renderMap();
   renderSidebar(); toast(`已放入「${t.title||'未命名心智圖'}」`);
 }
+// Moves a map (sub-page or not) into a folder, or to the outermost level when folderId is null.
+function moveMapToFolder(id, folderId){
+  const m=maps.get(id); if(!m||store.readOnly) return;
+  const wasSub=isSubPage(m), from=wasSub?maps.get(m.parentId):null;
+  if(wasSub){ if(editingId) commitEdit(); cards?.commit(); detachPage(m); }
+  const f=folderById(folderId||selectedSection);
+  if(!wasSub&&(m.folderId||null)===(f?f.id:null)) return;
+  setFolder(id, f?f.id:null, true);
+  if(wasSub){ save(id,true); renderSidebar(); }
+  if(wasSub) toast(`已從「${from?.title||'未命名心智圖'}」移出${f?`到「${f.name}」`:''}`);
+  else toast(f?`已移到「${f.name}」`:'已移到最外層');
+}
 listen($('pages'), 'dragover', e=>{
   if(!dragItem) return; clearDropMarks();
-  const mt=dropMapTarget(e.target);
-  if(mt){ if(!canNestMap(maps.get(dragItem.id),mt)) return; e.preventDefault(); e.dataTransfer.dropEffect='move'; $('pages').querySelector(`.page[data-id="${CSS.escape(mt.id)}"]`)?.classList.add('drop'); return; }
-  const fid=dropTargetFor(e.target); if(fid===undefined) return;
+  const spot=dropSpot(e); if(!spot) return;
   e.preventDefault(); e.dataTransfer.dropEffect='move';
-  const parent=dragItem.kind==='map'?maps.get(dragItem.id)?.folderId:folderById(dragItem.id)?.parentId;
-  if(fid) $('pages').querySelector(`.folder-row[data-folder="${CSS.escape(fid)}"]`)?.classList.add('drop');
-  else if(parent) $('pages').classList.add('drop-root');
+  if(spot.edge&&spot.el) spot.el.classList.add(spot.edge==='before'?'drop-before':'drop-after');
+  else if(spot.el) spot.el.classList.add('drop');
+  else if(spot.folder) $('pages').querySelector(`.folder-row[data-folder="${CSS.escape(spot.folder)}"]`)?.classList.add('drop');
+  else $('pages').classList.add('drop-root');
 });
 listen($('pages'), 'drop', e=>{
   if(!dragItem) return; e.preventDefault();
-  const mt=dropMapTarget(e.target);
-  if(mt){ const id=dragItem.id; dragItem=null; clearDropMarks(); nestMap(id, mt.id); return; }
-  const item=dragItem, fid=dropTargetFor(e.target); dragItem=null; clearDropMarks();
-  if(fid===undefined) return;
-  if(item.kind==='map') setFolder(item.id, fid); else setFolderParent(item.id, fid);
+  const spot=dropSpot(e), item=dragItem; dragItem=null; clearDropMarks();
+  if(!spot||spot.same) return;
+  if('nest' in spot) nestMap(item.id, spot.nest);
+  else if(item.kind==='map') moveMapToFolder(item.id, spot.folder);
+  else setFolderParent(item.id, spot.folder);
 });
 listen($('pages'), 'dragend', ()=>{ dragItem=null; clearDropMarks(); $('pages').querySelectorAll('.dragging').forEach(el=>el.classList.remove('dragging')); });
 
