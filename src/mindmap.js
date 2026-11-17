@@ -358,7 +358,8 @@ function renderMap(){
   cards?.render();
   // Column-style nodes are drawn by a real column card; once it has rendered at a new size, lay the tree out again.
   if(!relayingOut && hostsResized()){ relayingOut=true; try{ renderMap(); } finally{ relayingOut=false; } return; }
-  draw?.render(); drawEdges(); applyView(); placeBar(); renderGroup(); placeGrip(); placeDots(); syncCtxRail();
+  // Quick-add dots go first: the relation layer, redrawn with the edges, leaves their sides free.
+  draw?.render(); placeDots(); drawEdges(); applyView(); placeBar(); renderGroup(); placeGrip(); syncCtxRail();
 }
 /* ---------------- note tool rail ---------------- */
 // While a note card or a note-style node is selected, the left rail turns into that note's tools (Milanote style).
@@ -483,7 +484,7 @@ function placeDots(){
   const o=selectedId&&L.get(selectedId), info=selectedId&&idx.get(selectedId);
   const show=!!o&&!!info&&!editingId&&!store.readOnly&&!drag&&!hostCard(info.node)&&!groupSize();
   for(const b of addDots){
-    const a=show&&dotAction(b.dataset.pos); b.style.display=a?'':'none'; if(!a) continue;
+    const a=show&&dotAction(b.dataset.pos); b.style.display=a?'':'none'; if(a) b.dataset.node=selectedId; else { delete b.dataset.node; continue; }
     const pos=b.dataset.pos, gap=14;
     b.title=a.title; b.setAttribute('aria-label',a.title);
     b.style.left=(pos==='left'?o.x-gap:pos==='right'?o.x+o.w+gap:o.x+o.w/2)+'px';

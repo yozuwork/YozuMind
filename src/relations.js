@@ -178,6 +178,8 @@ export function setupRelations({ canvas, world, button, getMap, getView, getBox,
     if(box) {
       if(linking) ui.append(outline(box));
       for(const [side,[dx,dy]] of Object.entries(SIDES)) {
+        // A mind map node's quick-add + sits on this very spot; it wins, the other sides still start lines.
+        if(world.querySelector(`.node-add.${side}[data-node="${CSS.escape(hover)}"]:not([style*="display: none"])`)) continue;
         const p={x:box.x+box.w/2*(1+dx)+dx*14/k, y:box.y+box.h/2*(1+dy)+dy*14/k};
         ui.append(dot(p,{r:5/k,'stroke-width':1.5/k,class:'rel-dot','data-anchor':side,'data-id':hover}));
       }
