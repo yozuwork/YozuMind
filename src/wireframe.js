@@ -20,7 +20,13 @@ export const WIRE_KINDS = [
   ['list','清單',bi('list-ul'),'content',220,132,'選項一\n選項二\n選項三\n選項四',{multi:true}],
   ['table','表格',bi('table'),'content',440,168,'名稱 | 狀態 | 日期\n首頁改版 | 進行中 | 11/12\n會員系統 | 已完成 | 11/08\n金流串接 | 待開始 | 11/20',{multi:true}],
   ['avatar','頭像',bi('person-circle'),'content',64,64,''],
-  ['button','按鈕',bi('hand-index'),'form',128,44,'立即開始',{state:true}],
+  ['button','主要按鈕',bi('hand-index'),'buttons',128,44,'立即開始',{state:true}],
+  ['btn-outline','外框按鈕',bi('square'),'buttons',128,44,'了解更多'],
+  ['btn-text','文字按鈕',bi('link-45deg'),'buttons',112,36,'查看全部'],
+  ['btn-pill','膠囊按鈕',bi('capsule'),'buttons',168,48,'免費試用'],
+  ['btn-icon','圖示按鈕',bi('plus-circle'),'buttons',48,48,'+'],
+  ['btn-group','按鈕群組',bi('distribute-horizontal'),'buttons',288,44,'日\n週\n月',{multi:true}],
+  ['btn-split','下拉按鈕',bi('caret-down-square'),'buttons',160,44,'匯出'],
   ['input','輸入框',bi('input-cursor-text'),'form',260,44,'請輸入電子郵件'],
   ['search','搜尋列',bi('search'),'form',280,44,'搜尋…'],
   ['dropdown','下拉選單',bi('menu-down'),'form',240,44,'選擇一個項目'],
@@ -29,7 +35,7 @@ export const WIRE_KINDS = [
   ['toggle','開關',bi('toggle-on'),'form',170,30,'接收通知',{state:true}],
   ['slider','滑桿',bi('sliders2'),'form',240,30,''],
 ];
-export const WIRE_GROUPS = [['cards','卡片'],['layout','版面'],['content','內容'],['form','表單']];
+export const WIRE_GROUPS = [['cards','卡片'],['layout','版面'],['content','內容'],['buttons','按鈕'],['form','表單']];
 const INFO = Object.fromEntries(WIRE_KINDS.map(([kind,label,icon,group,w,h,text,opts={}])=>[kind,{kind,label,icon,group,w,h,text,...opts}]));
 export const wireInfo = kind => INFO[kind] || INFO.panel;
 export const isWireKind = kind => Object.hasOwn(INFO, kind);
@@ -44,6 +50,7 @@ export function blankWire(kind, id) {
 export const WIRE_EDIT_HINT = {
   navbar:'每行一項，第一行是品牌名稱', tabs:'每行一個分頁，第一個為目前分頁', list:'每行一個選項，第一個會標示為選取',
   table:'每行一列，用 | 分隔欄位；第一列是表頭（可直接貼上試算表）', image:'圖片說明，留空時顯示尺寸', window:'網址或視窗標題',
+  'btn-group':'每行一個按鈕，第一個為目前選取', 'btn-icon':'圖示文字或符號，例如 + ✕ ☰ ♥',
 };
 
 const el = (tag, cls, text) => { const n=document.createElement(tag); if(cls) n.className=cls; if(text!=null) n.textContent=text; return n; };
@@ -127,6 +134,24 @@ export function renderWire(card) {
     }
     case 'avatar': body.append(svg('wf-ink wf-avatar','<circle cx="12" cy="12" r="11"/><circle cx="12" cy="9.5" r="3.6"/><path d="M5.2 19.4c1.4-3 4-4.4 6.8-4.4s5.4 1.4 6.8 4.4"/>','xMidYMid meet')); break;
     case 'button': body.append(clip('wf-button wf-box',t||'按鈕')); break;
+    case 'btn-outline': body.append(clip('wf-button wf-btn-outline wf-box',t||'按鈕')); break;
+    case 'btn-text': body.append(el('span','wf-btn-text wf-clip',t||'文字按鈕')); break;
+    case 'btn-pill': {
+      const pill=clip('wf-button wf-btn-pill wf-box',t||'按鈕');
+      pill.append(svg('wf-ink wf-arrow','<path d="M4 12h15M13.5 6.5L19 12l-5.5 5.5"/>','xMidYMid meet'));
+      body.append(pill); break;
+    }
+    case 'btn-icon': body.append(clip('wf-button wf-btn-icon wf-box',t.trim()||'+')); break;
+    case 'btn-group': {
+      const row=el('div','wf-btn-group'), list=lines(t);
+      (list.length?list:['按鈕']).forEach((name,i)=>row.append(clip('wf-seg wf-box'+(i===0?' on':''),name)));
+      body.append(row); break;
+    }
+    case 'btn-split': {
+      const box=el('div','wf-button wf-btn-split wf-box'), arrow=el('span','wf-dd');
+      arrow.append(svg('wf-ink wf-caret-down','<path d="M6 9.5l6 6 6-6"/>'));
+      box.append(el('span','wf-value wf-clip',t||'按鈕'), arrow); body.append(box); break;
+    }
     case 'input': { const box=el('div','wf-input wf-box'); box.append(el('i','wf-caret'), el('span','wf-ph wf-clip',t)); body.append(box); break; }
     case 'search': { const box=el('div','wf-input wf-search wf-box'); box.append(svg('wf-ink wf-glass','<circle cx="10" cy="10" r="6.5"/><path d="M15 15l5.5 5.5"/>'), el('span','wf-ph wf-clip',t)); body.append(box); break; }
     case 'dropdown': {
