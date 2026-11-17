@@ -9,7 +9,7 @@ import {setupCharacterTodoDrawer} from './character-todo-drawer.js';
 import {setupCharacterPicker} from './character-picker.js';
 import { FILE_KINDS, MAX_ATTACHMENT_BYTES, fileKind, formatSize, getFile, putFile } from './attachments.js';
 import { ALIGNS, TEXT_COLORS, TEXT_STYLES, blankText, isTextTool, stepSize, textCss, textStyle } from './text-card.js';
-import { WIRE_INLINE, WIRE_TEMPLATES } from './wireframe.js';
+import { WIRE_INLINE, WIRE_TEMPLATES, applyFormat, setWireLine } from './wireframe.js';
 import { WIRE_EDIT_HINT, blankWire, installWireFilters, isWireFrame, renderWire, wireInfo, wireTool } from './wireframe.js';
 
 const bi = name => `<i class="bi bi-${name}" aria-hidden="true"></i>`;
@@ -375,14 +375,19 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       const drawing=renderWire(card); el.append(drawing);
       if(edit) {
         const info=wireInfo(card.kind), multi=!!info.multi;
-        const part=wirePartEdit?.id===card.id&&WIRE_TEMPLATES.includes(card.kind)?wirePartEdit:null;
-        // The words are edited where they sit; pieces made of several lines (lists, tables…) use the editor box.
-        const target=part ? drawing.querySelector(`[data-wire-part="${part.key}"]`) : WIRE_INLINE[card.kind] && drawing.querySelector(WIRE_INLINE[card.kind]);
+        // The words are edited where they sit: the part that was double-clicked, else the piece's main text.
+        // Pieces made of several lines opened from the toolbar use the editor box instead.
+        const mainSel=WIRE_INLINE[card.kind];
+        const picked=wirePartEdit?.id===card.id ? drawing.querySelector(`[data-wire-part="${wirePartEdit.key}"][data-wire-text]`) : null;
+        // A card template has no text of its own, so its title (or first words) opens instead.
+        const target=picked || (mainSel && drawing.querySelector(mainSel)) || (WIRE_TEMPLATES.includes(card.kind) && (drawing.querySelector('.wf-card-title[data-wire-text]')||drawing.querySelector('[data-wire-text]')));
         if(target) {
-          target.textContent=part ? (card.parts?.[part.key]?.text??part.text) : (card.text||'');
+          const main=!!mainSel && target.matches(mainSel) && target.dataset.line===undefined;
+          if(main) target.textContent=card.text||'';
           try { target.contentEditable='plaintext-only'; } catch { target.contentEditable='true'; }
           target.spellcheck=false; target.setAttribute('role','textbox'); target.setAttribute('aria-label',info.label+'文字');
-          target.dataset.wireInline=part?part.key:''; target.dataset.ph=info.label; target.classList.add('wf-editing');
+          target.dataset.wireInline=main?'main':target.dataset.line!==undefined?'line':'part'; target.dataset.ph=info.label; target.classList.add('wf-editing');
+          el.append(wireFormatBar(card, target.dataset.wirePart));
         } else {
           const box=h('div','wire-editor');
           const f=field(multi?'textarea':'input','wire-input',card.text,info.label+'文字',{field:'text'});
@@ -582,6 +587,21 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     for(let i=start+1;i<lines.length;i++) { const f=FENCE.exec(lines[i]); if(f && !f[1]) break; out.push(lines[i]); }
     return out.join('\n');
   }
+  // Word-style formatting for one wireframe part while its text is being edited.
+  function wireFormatBar(card, key) {
+    const bar=h('div','card-actions wire-fmt'), f=card.parts?.[key]||{};
+    bar.append(button('text-fmt'+(f.b?' on':''),'粗體','<b>B</b>',{wfmt:'b'}), button('text-fmt'+(f.i?' on':''),'斜體','<i style="font-family:Georgia,serif">I</i>',{wfmt:'i'}), button('text-fmt'+(f.u?' on':''),'底線','<u>U</u>',{wfmt:'u'}),
+      button('','縮小文字','A−',{wfmt:'down'}), button('','放大文字','A+',{wfmt:'up'}), h('span','bar-sep'), button('text-swatch'+(f.color?'':' on'),'自動顏色','A',{wfmt:'color:'}));
+    for(const [k,[hex,name]] of Object.entries(TEXT_COLORS)) { const b=button('text-swatch'+(f.color===k?' on':''),name,'A',{wfmt:'color:'+k}); b.style.setProperty('--c',hex); bar.append(b); }
+    return bar;
+  }
+  // Applies one formatting action to a part's stored format; `force` sets b/i/u instead of toggling.
+  function formatPart(p, act, node, force) {
+    if(['b','i','u'].includes(act)) { if(force ?? !p[act]) p[act]=true; else delete p[act]; }
+    else if(act==='up' || act==='down') { const now=p.fs||Math.round(parseFloat(getComputedStyle(node).fontSize))||16, next=stepSize({fs:now}, act==='up'?1:-1); if(next!==now) p.fs=next; }
+    else if(act.startsWith('color:')) { const k=act.slice(6); if(k) p.color=k; else delete p.color; }
+  }
+  const wireTextKeys = card => [...renderWire(card).querySelectorAll('[data-wire-text]')].map(n=>n.dataset.wirePart);
   function actions(card) {
     const bar=h('div','card-actions');
     if(viewOpen===card.id) {
@@ -590,6 +610,18 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
         const b=button('view-opt'+((card.view||'tile')===view?' on':''),label,'',{boardView:view}); b.append(icon(ic),h('span','',label)); bar.append(b);
       }
       return bar;
+    }
+    if(colorOpen===card.id && card.type==='wire') {
+      bar.classList.add('colors');
+      bar.append(button('text-swatch','自動（跟隨主題）','A',{wfmtAll:'color:'}));
+      for(const [k,[hex,name]] of Object.entries(TEXT_COLORS)) { const b=button('text-swatch','全部文字改為'+name,'A',{wfmtAll:'color:'+k}); b.style.setProperty('--c',hex); bar.append(b); }
+      return bar;
+    }
+    if(card.type==='wire') {
+      const keys=wireTextKeys(card), all=k=>keys.length>0 && keys.every(key=>card.parts?.[key]?.[k]);
+      if(keys.length) bar.append(button('text-fmt'+(all('b')?' on':''),'全部文字粗體','<b>B</b>',{wfmtAll:'b'}), button('text-fmt'+(all('i')?' on':''),'全部文字斜體','<i style="font-family:Georgia,serif">I</i>',{wfmtAll:'i'}), button('text-fmt'+(all('u')?' on':''),'全部文字底線','<u>U</u>',{wfmtAll:'u'}),
+        button('','全部文字縮小','A−',{wfmtAll:'down'}), button('','全部文字放大','A+',{wfmtAll:'up'}), button('text-color-btn','文字顏色','A',{cardAct:'color'}), h('span','bar-sep'));
+      if(renderWire(card).querySelectorAll('[data-wire-part]').length>1) bar.append(button(card.ungrouped?'on':'',card.ungrouped?'組成群組（整個元件一起移動）':'解除群組（可個別拖曳裡面的文字）',icon(card.ungrouped?'bounding-box':'bounding-box-circles'),{cardAct:'wireGroup'}));
     }
     if(colorOpen===card.id && card.type==='text') {
       bar.classList.add('colors');
@@ -756,7 +788,8 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     if(!el) { if(selected && !e.target.closest('.zoombar,.asset-panel')) { selected=null; render(); } return; }
     const id=el.dataset.id;
     const part=e.target.closest('[data-wire-part]');
-    if(part && canEdit() && editing!==id && !e.target.closest('.card-resize')) {
+    // Parts move on their own only after the piece is ungrouped; otherwise the whole piece is dragged.
+    if(part && canEdit() && editing!==id && !e.target.closest('.card-resize') && locate(getMap(),id)?.card?.ungrouped) {
       e.preventDefault();
       if(editing) commit();
       const card=locate(getMap(),id)?.card, key=part.dataset.wirePart, old=card.parts?.[key]||{};
@@ -920,13 +953,25 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
   on(rail,'click',e=>{ const b=e.target.closest('[data-tool]'); if(b && e.detail===0 && getMap() && canEdit()) createAtCenter(b.dataset.tool); });
 
   /* ---------- inputs and buttons inside cards ---------- */
+  on(layer,'pointerdown',e=>{
+    const b=e.target.closest('[data-wfmt]'); if(!b) return;
+    e.preventDefault(); e.stopPropagation();
+    const el=b.closest('.card'), loc=locate(getMap(),el?.dataset.id), node=el?.querySelector('[data-wire-inline]'); if(!loc || !node) return;
+    const key=node.dataset.wirePart, card=loc.card; card.parts ||= {};
+    formatPart(card.parts[key] ||= {}, b.dataset.wfmt, node);
+    applyFormat(node, card.parts[key]); b.closest('.wire-fmt').replaceWith(wireFormatBar(card,key)); onChange();
+  });
   on(layer,'input',e=>{
     const f=e.target, loc=locate(getMap(),f.closest('.card')?.dataset.id); if(!loc) return;
     if(f.dataset.wireInline!==undefined && loc.card.type==='wire') {
-      const key=f.dataset.wireInline, multi=!key && wireInfo(loc.card.kind).multi;
+      const c=loc.card, mode=f.dataset.wireInline, key=f.dataset.wirePart, multi=mode==='main' && wireInfo(c.kind).multi;
       let text=f.innerText.replace(/\n$/,''); if(!multi) text=text.replace(/\n/g,' ');
-      if(key) { loc.card.parts ||= {}; (loc.card.parts[key] ||= {}).text=text; }
-      else { loc.card.text=text; delete loc.card.parts; }
+      // Template parts keep their own words; main text and list/table lines write back into the piece's text.
+      if(mode==='part') { c.parts ||= {}; (c.parts[key] ||= {}).text=text; }
+      else {
+        c.text = mode==='line' ? setWireLine(c.text, +f.dataset.line, f.dataset.col===undefined?null:+f.dataset.col, text) : text;
+        if(c.parts?.[key]) delete c.parts[key].text;
+      }
       onChange(); return;
     }
     if(f.dataset.wirePartField!==undefined && loc.card.type==='wire') {
@@ -949,7 +994,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     const loc=locate(getMap(),editing); if(!loc) return;
     if(loc.card.type==='wire') {
       // Enter finishes single-line text; a paragraph takes new lines, finished with Esc or Ctrl+Enter.
-      const inline=f.dataset.wireInline!==undefined, multiline=inline && !f.dataset.wireInline && wireInfo(loc.card.kind).multi;
+      const inline=f.dataset.wireInline!==undefined, multiline=f.dataset.wireInline==='main' && wireInfo(loc.card.kind).multi;
       if(e.key==='Enter' && !e.shiftKey && (f.tagName==='INPUT' || (inline && !multiline))) { e.preventDefault(); commit(); canvas.focus({preventScroll:true}); }
       return;
     }
@@ -1020,6 +1065,21 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     }
     if(!canEdit()) return;
     if(b.dataset.wireToggle!==undefined || b.dataset.cardAct==='wireState') { if(editing&&editing!==card.id) commit(); snapshot(); if(card.on) delete card.on; else card.on=true; save(map.id); refresh(editing===card.id); return; }
+    if(b.dataset.wfmtAll) {
+      if(editing) commit();
+      const act=b.dataset.wfmtAll, live=cardEl(card.id), nodes=[...(live?.querySelectorAll('[data-wire-text]')||[])]; if(!nodes.length) return;
+      snapshot(); card.parts ||= {};
+      const force=['b','i','u'].includes(act) ? !nodes.every(n=>card.parts[n.dataset.wirePart]?.[act]) : undefined;
+      for(const n of nodes) formatPart(card.parts[n.dataset.wirePart] ||= {}, act, n, force);
+      if(act.startsWith('color:')) colorOpen=null;
+      save(map.id); refresh(); return;
+    }
+    if(b.dataset.cardAct==='wireGroup') {
+      if(editing) commit(); snapshot();
+      if(card.ungrouped) delete card.ungrouped;
+      else { card.ungrouped=true; if(!WIRE_TEMPLATES.includes(card.kind)) for(const p of Object.values(card.parts||{})) { delete p.x; delete p.y; } }
+      save(map.id); refresh(); toast(card.ungrouped?'已解除群組：可以個別拖曳裡面的文字':'已組成群組：整個元件一起移動'); return;
+    }
     if(b.dataset.cardAct==='wireDup') { if(editing) commit(); const copy=structuredClone(card); copy.id=uid('c'); delete copy.anchor; api.paste(copy,{x:card.x+WIRE_GRID*3, y:card.y+WIRE_GRID*3},null); if(isWireFrame(copy)) { copy.z=lowestZ(map)-1; save(map.id); refresh(); } return; }
     if(b.dataset.characterPick!==undefined) {if(editing)commit();clearSelection();selected=card.id;characterPicker.open(card.id);return;}
     if(b.dataset.characterMenu!==undefined) { if(editing) commit(); clearSelection(); selected=card.id; characterMenu=characterMenu===card.id?null:card.id; refresh(true); return; }

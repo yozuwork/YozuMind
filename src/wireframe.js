@@ -1,6 +1,8 @@
 // Wireframe mode: hand-drawn, low-fidelity UI components that live on the canvas as `wire` cards.
 // Each card stores {type:'wire', kind, text, w, h, on?}; `text` is the component's editable copy.
 
+import { TEXT_COLORS } from './text-card.js';
+
 const bi = name => `<i class="bi bi-${name}" aria-hidden="true"></i>`;
 
 // [kind, label, icon, group, width, height, default text, options]
@@ -65,12 +67,14 @@ const el = (tag, cls, text) => { const n=document.createElement(tag); if(cls) n.
 const svg = (cls, body, fit='none') => { const s=el('span',cls); s.innerHTML=`<svg viewBox="0 0 24 24" preserveAspectRatio="${fit}" aria-hidden="true">${body}</svg>`; return s; };
 // Text sits in its own clipping span so the wobbly outline around it is never cut off.
 const clip = (cls, text) => { const n=el('span',cls); n.append(el('span','wf-clip',text)); return n; };
+// Marks the text element of `node` (itself or its clipping child) with the source line it shows.
+const ln = (node, line, col) => { const t=node.classList.contains('wf-clip')?node:node.querySelector('.wf-clip')||node; t.dataset.line=line; if(col!=null) t.dataset.col=col; return node; };
 const lines = text => String(text||'').split('\n').map(s=>s.trim()).filter(Boolean);
 const toggleBtn = (cls, label, on) => { const b=el('button',cls+' wf-box'); b.type='button'; b.dataset.wireToggle=''; b.title=label; b.setAttribute('aria-label',label); b.setAttribute('aria-pressed',String(!!on)); return b; };
 
 // The component's drawing; it fills the card, so width and height come from the card.
 export function renderWire(card) {
-  const body=el('div',`wf-body wf-${card.kind}`+(card.on?' on':'')), t=card.text||'';
+  const body=el('div',`wf-body wf-${card.kind}`+(card.on?' on':'')+(card.ungrouped?' ungrouped':'')), t=card.text||'';
   switch(card.kind) {
     case 'music-card': case 'manga-card': case 'basic-card': {
       const box=el('div','wf-template '+card.kind);
@@ -102,8 +106,8 @@ export function renderWire(card) {
     }
     case 'navbar': {
       const bar=el('div','wf-nav wf-box'), [brand='Logo',...links]=lines(t), logo=el('span','wf-brand');
-      logo.append(el('i','wf-logo wf-box'), el('b','',brand));
-      const nav=el('span','wf-links'); links.forEach((link,i)=>nav.append(i===links.length-1&&links.length>1 ? clip('wf-cta wf-box',link) : el('span','wf-clip',link)));
+      logo.append(el('i','wf-logo wf-box'), ln(el('b','',brand),0));
+      const nav=el('span','wf-links'); links.forEach((link,i)=>nav.append(ln(i===links.length-1&&links.length>1 ? clip('wf-cta wf-box',link) : el('span','wf-clip',link),i+1)));
       bar.append(logo,nav); body.append(bar); break;
     }
     case 'panel': {
@@ -113,7 +117,7 @@ export function renderWire(card) {
     }
     case 'tabs': {
       const row=el('div','wf-tabrow'), list=lines(t);
-      (list.length?list:['分頁']).forEach((name,i)=>row.append(clip('wf-tab wf-box'+(i===0?' on':''),name)));
+      (list.length?list:['分頁']).forEach((name,i)=>row.append(ln(clip('wf-tab wf-box'+(i===0?' on':''),name),i)));
       body.append(row, el('div','wf-tabpanel wf-box')); break;
     }
     case 'heading': body.append(el('div','wf-heading',t||'標題')); break;
@@ -125,7 +129,7 @@ export function renderWire(card) {
     }
     case 'list': {
       const box=el('div','wf-list wf-box'), rows=el('div','wf-rows');
-      lines(t).forEach((item,i)=>rows.append(el('div','wf-row wf-clip'+(i===0?' on':''),item)));
+      lines(t).forEach((item,i)=>rows.append(ln(el('div','wf-row wf-clip'+(i===0?' on':''),item),i)));
       const bar=el('div','wf-scroll'); bar.append(el('i','wf-thumb wf-box'));
       box.append(rows,bar); body.append(box); break;
     }
@@ -136,7 +140,7 @@ export function renderWire(card) {
       ink.style.cssText=text.style.cssText=grid;
       (rows.length?rows:[['']]).forEach((r,ri)=>{ for(let c=0;c<cols;c++) {
         ink.append(el('i',ri===0?'head':''));
-        text.append(el('span','wf-clip'+(ri===0?' head':''),r[c]??''));
+        text.append(ln(el('span','wf-clip'+(ri===0?' head':''),r[c]??''),ri,c));
       }});
       const box=el('div','wf-table wf-box'); box.append(ink,text); body.append(box); break;
     }
@@ -152,7 +156,7 @@ export function renderWire(card) {
     case 'btn-icon': body.append(clip('wf-button wf-btn-icon wf-box',t.trim()||'+')); break;
     case 'btn-group': {
       const row=el('div','wf-btn-group'), list=lines(t);
-      (list.length?list:['按鈕']).forEach((name,i)=>row.append(clip('wf-seg wf-box'+(i===0?' on':''),name)));
+      (list.length?list:['按鈕']).forEach((name,i)=>row.append(ln(clip('wf-seg wf-box'+(i===0?' on':''),name),i)));
       body.append(row); break;
     }
     case 'btn-split': {
@@ -183,17 +187,36 @@ export function renderWire(card) {
   }
   // Stable part keys keep edits and positions through redraws and persistence.
   const selector='.wf-template > div,.wf-clip,.wf-heading,.wf-text,.wf-panel-head,.wf-brand b,.wf-cap,.wf-label,.wf-mark,.wf-avatar,.wf-track,.wf-logo,.wf-menu,.wf-dots,.wf-cells > span';
-  // Only template parts move on their own; a single piece always moves as a whole, so older offsets are ignored.
-  const template=WIRE_TEMPLATES.includes(card.kind);
+  // Every part can be edited and formatted; parts only move on their own once the piece is ungrouped.
+  // Older offsets on simple pieces (from before grouping) are ignored until then.
+  const moves=card.ungrouped || WIRE_TEMPLATES.includes(card.kind);
   [...body.querySelectorAll(selector)].filter(n=>!n.querySelector(selector)).forEach((node,index)=>{
     const key=String(index), part=card.parts?.[key];
-    if(part?.text!==undefined) node.textContent=part.text;
-    if(!template) return;
     node.dataset.wirePart=key;
-    node.title='拖曳移動 · 點兩下編輯';
-    if(part) node.style.translate=`${part.x||0}px ${part.y||0}px`;
+    if(!node.matches(NOT_TEXT)) node.dataset.wireText='';
+    node.title=card.ungrouped?'拖曳移動 · 點兩下編輯':'點兩下編輯文字';
+    if(part?.text!==undefined) node.textContent=part.text;
+    if(part) applyFormat(node, part);
+    if(part && moves && (part.x||part.y)) node.style.translate=`${part.x||0}px ${part.y||0}px`;
   });
   return body;
+}
+
+// Parts that are drawings, not words.
+const NOT_TEXT='.wf-mark,.wf-avatar,.wf-track,.wf-logo,.wf-menu,.wf-dots';
+// Word-style formatting stored on a part: b, i, u (booleans), fs (px) and color (palette key).
+export const FORMAT_KEYS=['b','i','u','fs','color'];
+export function applyFormat(node, f) {
+  node.style.fontWeight=f.b?'700':''; node.style.fontStyle=f.i?'italic':''; node.style.textDecoration=f.u?'underline':'';
+  node.style.fontSize=f.fs?f.fs+'px':''; node.style.color=TEXT_COLORS[f.color]?.[0]||'';
+}
+// Writes `value` into one line (or one table cell) of a multi-line piece's text.
+export function setWireLine(text, line, col, value) {
+  const rows=lines(text); while(rows.length<=line) rows.push('');
+  const v=String(value).replace(/\n/g,' ').trim();
+  if(col==null) rows[line]=v;
+  else { const cells=rows[line].split(/\t|\|/).map(s=>s.trim()); while(cells.length<=col) cells.push(''); cells[col]=v.replace(/\|/g,'/'); rows[line]=cells.join(' | '); }
+  return rows.join('\n');
 }
 
 // One shared set of SVG filters gives every stroke a slightly wobbly, hand-inked edge.

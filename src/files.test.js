@@ -330,3 +330,14 @@ test('text cards keep their formatting through import and drop bad values',async
   assert.equal(a.bold,true); assert.equal(a.italic,true); assert.equal(a.underline,true); assert.equal(a.align,'center'); assert.equal(a.w,300);
   assert.equal(b.style,'body'); assert.equal(b.color,undefined); assert.equal(b.bold,undefined); assert.equal(b.align,undefined);
 });
+
+test('wireframe pieces keep grouping and per-part formatting through import',async()=>{
+  const {parseMaps}=await import('./files.js');
+  let n=0; const uid=p=>p+(++n);
+  const [map]=parseMaps(JSON.stringify({title:'t',root:{id:'r',text:'R',children:[]},cards:[
+    {id:'w',type:'wire',kind:'basic-card',x:0,y:0,w:340,h:450,text:'',ungrouped:true,parts:{'0':{text:'封面',x:5,y:-3,b:true,fs:30,color:'red'},'1':{color:'#000',b:'yes'},bad:{text:'x'}}},
+  ]}),uid);
+  const w=map.cards[0];
+  assert.equal(w.ungrouped,true);
+  assert.deepEqual(w.parts,{'0':{text:'封面',x:5,y:-3,b:true,fs:30,color:'red'}});
+});

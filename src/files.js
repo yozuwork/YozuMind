@@ -1,4 +1,4 @@
-import { readTextCard } from './text-card.js';
+import { TEXT_COLORS, readTextCard } from './text-card.js';
 import { validDailyDate } from './daily.js';
 import {inboxMeta} from './inbox-state.js';
 import { isWireKind, wireInfo } from './wireframe.js';
@@ -194,6 +194,22 @@ export function parseMaps(text, newId) {
         w: Number.isFinite(value.w) ? Math.min(2400, Math.max(24, value.w)) : size.w,
         h: Number.isFinite(value.h) ? Math.min(2400, Math.max(20, value.h)) : size.h });
       if (value.on === true) result.on = true;
+      if (value.ungrouped === true) result.ungrouped = true;
+      // Per-part words, offsets and formatting.
+      if (value.parts && typeof value.parts === 'object' && !Array.isArray(value.parts)) {
+        const parts = {};
+        for (const [key, p] of Object.entries(value.parts).slice(0, 200)) {
+          if (!/^\d{1,3}$/.test(key) || !p || typeof p !== 'object') continue;
+          const q = {};
+          if (typeof p.text === 'string') q.text = p.text.slice(0, 2000);
+          for (const k of ['x','y']) if (Number.isFinite(p[k])) q[k] = Math.max(-4000, Math.min(4000, p[k]));
+          for (const k of ['b','i','u']) if (p[k] === true) q[k] = true;
+          if (Number.isFinite(p.fs)) q.fs = Math.max(8, Math.min(200, Math.round(p.fs)));
+          if (TEXT_COLORS[p.color]) q.color = p.color;
+          if (Object.keys(q).length) parts[key] = q;
+        }
+        if (Object.keys(parts).length) result.parts = parts;
+      }
     }
     else {
       const list = value.type === 'todo' ? value.items : value.cards;
