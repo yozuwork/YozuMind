@@ -1,0 +1,1 @@
+var e=`/YozuMind/assets/bootstrap-icons-DJdhg9lH.woff2`;export{e as default};
