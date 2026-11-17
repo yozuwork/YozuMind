@@ -100,6 +100,7 @@ export function parseMaps(text, newId) {
     if (Number.isFinite(value.w)) result.w = Math.min(900, Math.max(60, value.w));
     if (Number.isFinite(value.h)) result.h = Math.min(900, Math.max(24, value.h));
     if (typeof value.edgeLabel === 'string' && value.edgeLabel.trim() && value.edgeLabel.length <= 500) result.edgeLabel = value.edgeLabel;
+    if (value.flip === true) result.flip = true;
     if (typeof value.page === 'string' && value.page.length <= 100) result.page = mapIds.get(value.page) || value.page;
     return result;
   }
@@ -114,7 +115,7 @@ export function parseMaps(text, newId) {
     return value;
   }
   function card(value, nested) {
-    if (!value || typeof value !== 'object' || !['note','link','todo','column','folder','image','board','file','character','wire'].includes(value.type) ||
+    if (!value || typeof value !== 'object' || !['note','json','link','todo','column','folder','image','board','file','character','wire'].includes(value.type) ||
         (nested && ['column','folder','wire'].includes(value.type)) || ++cardCount > 2000) {
       throw new Error('卡片格式不正確，或超過 2,000 張卡片。');
     }
@@ -138,8 +139,14 @@ export function parseMaps(text, newId) {
       if (NOTE_COLORS.includes(value.color)) result.color = value.color;
       if (value.cards !== undefined) {
         if (!Array.isArray(value.cards) || value.cards.length > 100) throw new Error('筆記內嵌內容格式不正確。');
-        result.cards = value.cards.map(child => { const embed = card(child, true); if (embed.type !== 'board') throw new Error('筆記只能內嵌獨立頁面。'); return embed; });
+        result.cards = value.cards.map(child => { const embed = card(child, true); if (embed.type !== 'board' && embed.type !== 'json') throw new Error('筆記只能內嵌獨立頁面或 JSON 卡片。'); return embed; });
       }
+    }
+    else if (value.type === 'json') {
+      result.text = cardText(value.text, 100000);
+      if (value.title) result.title = cardText(value.title, 1000);
+      if (value.raw === true) result.raw = true;
+      if (value.collapsed === true) result.collapsed = true;
     }
     else if (value.type === 'board') {
       if (typeof value.mapId !== 'string' || value.mapId.length > 100) throw new Error('獨立頁面格式不正確。');

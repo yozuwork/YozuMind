@@ -168,6 +168,7 @@ function writeError(e, retry, id){
 function setStatus(){
   const dot=$('stDot'), t=$('stText');
   dot.className='dotst';
+  queueMicrotask(()=>{ dot.title=t.textContent; });
   if(store.mode==='loading'){ t.textContent='載入中…'; return; }
   if(store.readOnly){ t.textContent='唯讀檢視'; return; }
   if(store.mode==='local'){
@@ -284,27 +285,37 @@ function gapSib(d){ return isDown() ? (d===1?72:30) : (d===1?30:12); }
 function gapLvl(d){ return isDown() ? (d===0?120:62) : (d===0?110:56); }
 function buildIndex(){
   idx=new Map(); const m=cur(); if(!m) return;
-  for(const tree of treesOf(m)) (function walk(n,parent,depth,color){
-    idx.set(n.id,{node:n,parent,depth,color,tree});
-    n.children.forEach((c,i)=>walk(c,n,depth+1, depth===0 ? (c.color||PALETTE[i%PALETTE.length]) : color));
-  })(tree.root,null,0,null);
+  // dir is 1 for branches on the normal side (right / below), -1 for branches flipped to the other side of the central topic.
+  for(const tree of treesOf(m)) (function walk(n,parent,depth,color,dir){
+    idx.set(n.id,{node:n,parent,depth,color,tree,dir});
+    n.children.forEach((c,i)=>walk(c,n,depth+1, depth===0 ? (c.color||PALETTE[i%PALETTE.length]) : color, depth===0 ? (c.flip?-1:1) : dir));
+  })(tree.root,null,0,null,1);
 }
 function doLayout(){
   L=new Map(); const m=cur(); if(!m) return; const down=isDown();
+  // The central topic's children split into two groups: normal side (right / below) and flipped side (left / above).
+  const groups=(n,d)=>{ const kids=n.collapsed?[]:n.children; return d===0 ? [kids.filter(c=>!c.flip), kids.filter(c=>c.flip)] : [kids, []]; };
   function size(n,d){
-    const s=measure(n,d); const kids=n.collapsed?[]:n.children; let tot=0;
-    kids.forEach((c,i)=>{ size(c,d+1); const o=L.get(c.id); tot += down?o.sw:o.sh; if(i) tot+=gapSib(d+1); });
-    L.set(n.id,{w:s.w,h:s.h,tot, sw:down?Math.max(s.w,tot):0, sh:down?0:Math.max(s.h,tot), x:0,y:0});
+    const s=measure(n,d); (n.collapsed?[]:n.children).forEach(c=>size(c,d+1));
+    const sum=list=>list.reduce((t,c,i)=>{ const o=L.get(c.id); return t+(down?o.sw:o.sh)+(i?gapSib(d+1):0); },0);
+    const [front,back]=groups(n,d), tot=sum(front), totB=sum(back);
+    L.set(n.id,{w:s.w,h:s.h,tot,totB, sw:down?Math.max(s.w,tot,totB):0, sh:down?0:Math.max(s.h,tot,totB), x:0,y:0});
   }
-  function placeDown(n,cx,y,d){
-    const o=L.get(n.id); o.x=cx-o.w/2; o.y=y; let s=cx-o.tot/2;
-    (n.collapsed?[]:n.children).forEach(c=>{ const co=L.get(c.id); placeDown(c, s+co.sw/2, y+o.h+gapLvl(d), d+1); s+=co.sw+gapSib(d+1); });
+  // Down: ax is the centre x, ay the near edge. Right: ax is the near edge, ay the centre y. dir -1 grows the other way.
+  function place(n,ax,ay,d,dir){
+    const o=L.get(n.id);
+    if(down){ o.x=ax-o.w/2; o.y=dir>0?ay:ay-o.h; } else { o.x=dir>0?ax:ax-o.w; o.y=ay-o.h/2; }
+    groups(n,d).forEach((list,gi)=>{
+      const sd=d===0?(gi?-1:1):dir, tot=gi?o.totB:o.tot;
+      let s=(down?o.x+o.w/2:o.y+o.h/2)-tot/2;
+      for(const c of list){
+        const co=L.get(c.id);
+        if(down){ place(c, s+co.sw/2, sd>0?o.y+o.h+gapLvl(d):o.y-gapLvl(d), d+1, sd); s+=co.sw+gapSib(d+1); }
+        else { place(c, sd>0?o.x+o.w+gapLvl(d):o.x-gapLvl(d), s+co.sh/2, d+1, sd); s+=co.sh+gapSib(d+1); }
+      }
+    });
   }
-  function placeRight(n,x,cy,d){
-    const o=L.get(n.id); o.x=x; o.y=cy-o.h/2; let s=cy-o.tot/2;
-    (n.collapsed?[]:n.children).forEach(c=>{ const co=L.get(c.id); placeRight(c, x+o.w+gapLvl(d), s+co.sh/2, d+1); s+=co.sh+gapSib(d+1); });
-  }
-  for(const tree of treesOf(m)){ size(tree.root,0); (down?placeDown:placeRight)(tree.root,tree.x,tree.y,0); }
+  for(const tree of treesOf(m)){ size(tree.root,0); place(tree.root,tree.x,tree.y,0,1); }
   // Nodes dragged to a free spot keep an offset from their automatic place; descendants move along.
   for(const tree of treesOf(m)) (function shift(n,ax,ay){
     const o=L.get(n.id); if(!o) return;
@@ -347,7 +358,7 @@ function renderMap(){
   cards?.render();
   // Column-style nodes are drawn by a real column card; once it has rendered at a new size, lay the tree out again.
   if(!relayingOut && hostsResized()){ relayingOut=true; try{ renderMap(); } finally{ relayingOut=false; } return; }
-  draw?.render(); drawEdges(); applyView(); placeBar(); renderGroup(); placeGrip(); syncCtxRail();
+  draw?.render(); drawEdges(); applyView(); placeBar(); renderGroup(); placeGrip(); placeDots(); syncCtxRail();
 }
 /* ---------------- note tool rail ---------------- */
 // While a note card or a note-style node is selected, the left rail turns into that note's tools (Milanote style).
@@ -376,7 +387,8 @@ function syncCtxRail(){
     const progress=characterProgress(t.card,characterSourceCards(t.card,cur(),inWorkspace([...maps.values()])));
     info.textContent=`每項待辦 10 XP · 目前每 ${progress.required} XP 升一級\n${names.length?'連動：'+names.join('、'):'尚未連動待辦清單'}`;
   }
-  ['smaller','bigger','todo','code','formatJson','jsonTree'].forEach(k=>show(k,t.kind==='card'&&!t.card.linkedOnly));
+  ['smaller','bigger','todo','code'].forEach(k=>show(k,t.kind==='card'&&!t.card.linkedOnly));
+  show('formatJson',false); show('jsonTree',t.kind==='card'&&!t.card.linkedOnly&&!!t.card.jsonTree);
   rail.querySelector('[data-ctx="jsonTree"]').classList.toggle('on',!!t.card?.jsonTree);
   show('title',!character&&!t.card?.linkedOnly);
   if(character) return;
@@ -452,6 +464,40 @@ function nodeAction(cardId, act){
   cards?.deselect(); selectedId=id;
   if(act==='child') addChild(); else if(act==='unwrap') setNodeStyle(id,'plain');
 }
+// Quick-add dots on the sides of the selected node: outward adds a child, the two cross sides add a sibling before / after.
+// The central topic gets a dot on both ends of the layout axis, so branches can grow on either side.
+const addDots=['top','right','bottom','left'].map(pos=>{
+  const b=document.createElement('button'); b.type='button'; b.className='node-add '+pos; b.dataset.pos=pos; b.innerHTML='<i class="bi bi-plus-lg"></i>'; world.append(b); return b;
+});
+function dotAction(pos){
+  const info=idx.get(selectedId); if(!info) return null;
+  const down=isDown(), axisFwd=down?'bottom':'right', axisBack=down?'top':'left';
+  if(info.depth===0){ if(pos===axisFwd) return {act:'child',title:'新增子節點'}; if(pos===axisBack) return {act:'child',flip:true,title:'在另一側新增子節點'}; return null; }
+  const out=info.dir>0?axisFwd:axisBack, inward=info.dir>0?axisBack:axisFwd;
+  if(pos===out) return {act:'child',title:'新增子節點'};
+  if(pos===inward) return null;
+  const before=pos==='top'||pos==='left';
+  return {act:'sibling',before,title:before?'在前面新增同層節點':'在後面新增同層節點'};
+}
+function placeDots(){
+  const o=selectedId&&L.get(selectedId), info=selectedId&&idx.get(selectedId);
+  const show=!!o&&!!info&&!editingId&&!store.readOnly&&!drag&&!hostCard(info.node)&&!groupSize();
+  for(const b of addDots){
+    const a=show&&dotAction(b.dataset.pos); b.style.display=a?'':'none'; if(!a) continue;
+    const pos=b.dataset.pos, gap=14;
+    b.title=a.title; b.setAttribute('aria-label',a.title);
+    b.style.left=(pos==='left'?o.x-gap:pos==='right'?o.x+o.w+gap:o.x+o.w/2)+'px';
+    b.style.top=(pos==='top'?o.y-gap:pos==='bottom'?o.y+o.h+gap:o.y+o.h/2)+'px';
+    b.style.setProperty('--c', info.color||'var(--accent)');
+  }
+}
+for(const b of addDots){
+  b.addEventListener('pointerdown',e=>{ e.stopPropagation(); e.preventDefault(); });
+  b.addEventListener('click',e=>{
+    e.stopPropagation(); const a=dotAction(b.dataset.pos); if(!a) return;
+    if(a.act==='child') addChild(a.flip===true); else addSibling(a.before);
+  });
+}
 const nodeGrip=document.createElement('div'); nodeGrip.className='node-grip'; nodeGrip.title='拖曳調整大小'; world.append(nodeGrip);
 function placeGrip(){
   const o=selectedId&&L.get(selectedId), show=!!o&&!editingId&&!store.readOnly&&(!drag);
@@ -464,23 +510,24 @@ function drawEdges(){
   for(const [id,info] of idx){
     const n=info.node, o=L.get(id); if(!o) continue;
     if(n.collapsed && n.children.length){
-      const cx= down? o.x+o.w/2 : o.x+o.w+14, cy= down? o.y+o.h+14 : o.y+o.h/2;
+      const cx= down? o.x+o.w/2 : info.dir<0? o.x-14 : o.x+o.w+14, cy= down? (info.dir<0? o.y-14 : o.y+o.h+14) : o.y+o.h/2;
       const col = info.depth===0 ? 'var(--ink-2)' : info.color;
       out+=`<g class="chip" data-toggle="${id}"><circle cx="${cx}" cy="${cy}" r="11" fill="${col}"/><text x="${cx}" y="${cy}">${countDesc(n)+pinsUnder(n)}</text></g>`;
       continue;
     }
-    const kids=n.children, k=kids.length;
-    kids.forEach((c,i)=>{
+    const side=c=>info.depth===0 ? (c.flip?-1:1) : info.dir;
+    n.children.forEach(c=>{
       const co=L.get(c.id), ci=idx.get(c.id); if(!co) return;
+      const sib=n.children.filter(x=>side(x)===side(c)), k=sib.length, i=sib.indexOf(c), sd=side(c), inset=info.depth===0?0:3;
       const t = k>1 ? (i/(k-1)-.5) : 0;
       let d;
       if(down){
-        const sx=o.x+o.w/2 + t*(info.depth===0? o.w*0.36 : 0), sy=o.y+o.h-(info.depth===0?0:3);
-        const ex=co.x+co.w/2, ey=co.y+2, dy=ey-sy;
+        const sx=o.x+o.w/2 + t*(info.depth===0? o.w*0.36 : 0), sy=sd>0? o.y+o.h-inset : o.y+inset;
+        const ex=co.x+co.w/2, ey=sd>0? co.y+2 : co.y+co.h-2, dy=ey-sy;
         d=`M${sx} ${sy} C${sx} ${sy+dy*.55} ${ex} ${ey-dy*.55} ${ex} ${ey}`;
       } else {
-        const sx=o.x+o.w-(info.depth===0?0:3), sy=o.y+o.h/2 + t*(info.depth===0? o.h*0.4 : 0);
-        const ex=co.x+2, ey=co.y+co.h/2, dx=ex-sx;
+        const sx=sd>0? o.x+o.w-inset : o.x+inset, sy=o.y+o.h/2 + t*(info.depth===0? o.h*0.4 : 0);
+        const ex=sd>0? co.x+2 : co.x+co.w-2, ey=co.y+co.h/2, dx=ex-sx;
         d=`M${sx} ${sy} C${sx+dx*.55} ${sy} ${ex-dx*.55} ${ey} ${ex} ${ey}`;
       }
       out+=`<path d="${d}" stroke="${ci.color}" stroke-width="${ci.depth===1?5:3.2}"/>`;
@@ -598,22 +645,24 @@ listen(nodebar, 'click', e=>{
 
 /* ---------------- edits ---------------- */
 function guard(){ return !store.readOnly && !!cur(); }
-function addChild(){
+function addChild(flip){
   if(!guard()) return; const info=idx.get(selectedId); if(!info) return;
   if(editingId) commitEdit();
   snapshot();
   const n=mkNode('', info.depth===0? nextColor(info.node):null);
+  if(info.depth===0&&flip===true) n.flip=true;
   info.node.collapsed=false; info.node.children.push(n);
   selectedId=n.id; renderMap(); ensureVisible(n.id); startEdit(n.id,null,true); save(currentId);
 }
-function addSibling(){
+function addSibling(before){
   if(!guard()) return; const info=idx.get(selectedId); if(!info) return;
   if(!info.parent) return addChild();
   if(editingId) commitEdit();
   snapshot();
   const p=info.parent, i=p.children.indexOf(info.node);
   const n=mkNode('', info.depth===1? nextColor(info.parent):null);
-  p.children.splice(i+1,0,n);
+  if(info.depth===1&&info.node.flip) n.flip=true;
+  p.children.splice(before===true?i:i+1,0,n);
   selectedId=n.id; renderMap(); ensureVisible(n.id); startEdit(n.id,null,true); save(currentId);
 }
 function deleteSel(){
@@ -740,7 +789,7 @@ listen(world, 'paste', e=>{
 const ptrs=new Map(); let gesture=null, drag=null, ghost=null;
 listen(canvas, 'pointerdown', e=>{
   if(e.pointerType==='mouse' && e.button!==0) return;
-  if(e.target.closest('.zoombar,.empty-state,.nodebar,.card,.draw-panel,.edge-label.editing')) return;
+  if(e.target.closest('.zoombar,.empty-state,.nodebar,.card,.draw-panel,.edge-label.editing,.node-add')) return;
   closePops();
   ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
   if(ptrs.size===2){ endDrag(false); const p=[...ptrs.values()]; gesture={type:'pinch', d:Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y), mx:(p[0].x+p[1].x)/2, my:(p[0].y+p[1].y)/2}; return; }
@@ -1753,8 +1802,32 @@ listen($('pages'), 'dragstart', e=>{
   dragItem=fr?{kind:'folder',id:fr.dataset.folder}:{kind:'map',id:row.dataset.id};
   e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',dragItem.id); (fr||row).classList.add('dragging');
 });
+// A map row dropped onto another map row becomes that map's sub-page (via a page card on its canvas).
+function dropMapTarget(target){
+  if(dragItem?.kind!=='map') return null;
+  const row=target.closest?.('.page'), t=row&&maps.get(row.dataset.id), m=maps.get(dragItem.id);
+  if(!t||!m||t.id===m.id) return null;
+  return t;
+}
+function canNestMap(m, t){ return !store.readOnly&&t.kind!=='json'&&workspaceOf(t)===workspaceOf(m)&&!containsPage(m,t.id)&&!pageTree(m).some(x=>x.id===t.id); }
+function nestMap(id, targetId){
+  const m=maps.get(id), t=maps.get(targetId); if(!m||!t||!canNestMap(m,t)) return;
+  if(editingId) commitEdit(); cards?.commit();
+  snapshot(t.id);
+  t.cards=t.cards||[];
+  let x=0, y=0, any=false;
+  for(const c of t.cards){ if(typeof c.x!=='number') continue; const right=c.x+(c.w||220); if(!any||right>x){ x=right; y=typeof c.y==='number'?c.y:0; } any=true; }
+  t.cards.push({id:uid('c'), type:'board', mapId:m.id, title:m.title||'', x:any?x+40:0, y, w:160, h:150});
+  m.parentId=t.id;
+  if(!openPages.has(t.id)){ openPages.add(t.id); try{ localStorage.setItem(OPEN_PAGES_KEY,JSON.stringify([...openPages])); }catch(e){} }
+  save(t.id,true); save(m.id,true);
+  if(t.id===currentId) renderMap();
+  renderSidebar(); toast(`已放入「${t.title||'未命名心智圖'}」`);
+}
 listen($('pages'), 'dragover', e=>{
   if(!dragItem) return; clearDropMarks();
+  const mt=dropMapTarget(e.target);
+  if(mt){ if(!canNestMap(maps.get(dragItem.id),mt)) return; e.preventDefault(); e.dataTransfer.dropEffect='move'; $('pages').querySelector(`.page[data-id="${CSS.escape(mt.id)}"]`)?.classList.add('drop'); return; }
   const fid=dropTargetFor(e.target); if(fid===undefined) return;
   e.preventDefault(); e.dataTransfer.dropEffect='move';
   const parent=dragItem.kind==='map'?maps.get(dragItem.id)?.folderId:folderById(dragItem.id)?.parentId;
@@ -1763,6 +1836,8 @@ listen($('pages'), 'dragover', e=>{
 });
 listen($('pages'), 'drop', e=>{
   if(!dragItem) return; e.preventDefault();
+  const mt=dropMapTarget(e.target);
+  if(mt){ const id=dragItem.id; dragItem=null; clearDropMarks(); nestMap(id, mt.id); return; }
   const item=dragItem, fid=dropTargetFor(e.target); dragItem=null; clearDropMarks();
   if(fid===undefined) return;
   if(item.kind==='map') setFolder(item.id, fid); else setFolderParent(item.id, fid);
@@ -1937,6 +2012,14 @@ listen($('layDown'), 'click', ()=>setLayout('down'));
 listen($('layRight'), 'click', ()=>setLayout('right'));
 
 /* side toggling */
+// Save / backup actions stay folded behind the footer icon so the map list gets the room; the choice is remembered.
+const FILE_ACTIONS_KEY='yozu-file-actions-open';
+function setFileActions(open){
+  $('fileActions').hidden=!open; $('fileActionsToggle').setAttribute('aria-expanded',String(open));
+  try{ localStorage.setItem(FILE_ACTIONS_KEY,open?'1':'0'); }catch(e){}
+}
+try{ if(localStorage.getItem(FILE_ACTIONS_KEY)==='1') setFileActions(true); }catch(e){}
+listen($('fileActionsToggle'), 'click', ()=>setFileActions($('fileActions').hidden));
 listen($('closeSide'), 'click', ()=>app.classList.add('side-closed'));
 listen($('openSide'), 'click', ()=>app.classList.toggle('side-closed'));
 listen($('scrim'), 'click', ()=>app.classList.add('side-closed'));
@@ -2335,5 +2418,5 @@ jsonHub=setupJsonPage({app,getMap:id=>maps.get(id),canEdit:()=>ready&&!store.rea
 init();
 
 // Remove everything this run drew so a hot reload or remount starts from a clean canvas.
-return () => { for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; edgeLabels.remove(); groupLayer.remove(); pinEdges.remove(); nodeGrip.remove(); hideBar(); ghost?.remove(); workspaceMenu?.destroy(); layersHub?.destroy();layerOutline.remove();jsonHub?.destroy();imageTools?.destroy();projectsHub?.destroy();sectionsHub?.destroy();folderHub?.destroy(); inboxHub?.destroy(); notesHub?.destroy(); galleryPage?.destroy(); characterHub?.destroy(); gallery.destroy(); draw?.destroy(); relations?.destroy(); cards?.destroy(); assets?.destroy(); disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
+return () => { for(const el of els.values()) el.remove(); els.clear(); edges.innerHTML=''; edgeLabels.remove(); groupLayer.remove(); pinEdges.remove(); nodeGrip.remove(); addDots.forEach(b=>b.remove()); hideBar(); ghost?.remove(); workspaceMenu?.destroy(); layersHub?.destroy();layerOutline.remove();jsonHub?.destroy();imageTools?.destroy();projectsHub?.destroy();sectionsHub?.destroy();folderHub?.destroy(); inboxHub?.destroy(); notesHub?.destroy(); galleryPage?.destroy(); characterHub?.destroy(); gallery.destroy(); draw?.destroy(); relations?.destroy(); cards?.destroy(); assets?.destroy(); disposers.forEach(dispose => dispose()); clearTimeout(toastT); pending.forEach(clearTimeout); };
 }

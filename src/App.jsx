@@ -34,7 +34,8 @@ function Sidebar() { return (<aside className="side" id="side" aria-label="心�
       <div className="sec">當日心智圖</div><div id="dailyPages"></div>
       <div className="sec">關聯到這一天</div><div id="dailyLinks"></div>
     </div>
-    <div className="file-actions" aria-label="檔案管理">
+    <div className="file-actions" id="fileActions" aria-label="檔案管理" hidden>
+      <p className="save-status" id="stText" role="status">載入中…</p>
       <button className="side-act" id="importBtn" title="匯入 ZIP 存檔或舊版 JSON，保留現有資料"><i className="bi bi-folder2-open" aria-hidden="true"></i>匯入存檔</button>
       <button className="side-act" id="exportBtn" title="選擇要匯出的工作區與內容"><i className="bi bi-download" aria-hidden="true"></i>匯出存檔</button>
       <button className="side-act" id="exportAllBtn" title="將所有工作區與完整內容打包成 ZIP"><i className="bi bi-archive" aria-hidden="true"></i>備份所有工作區</button>
@@ -44,7 +45,7 @@ function Sidebar() { return (<aside className="side" id="side" aria-label="心�
       <p>編輯自動暫存於此瀏覽器</p>
       <p>ZIP 包含圖片、文件、圖庫、筆記與關聯紀錄，可在其他裝置直接匯入。</p>
     </div>
-    <div className="side-foot"><span className="dotst" id="stDot"></span><span id="stText">載入中…</span></div>
+    <div className="side-foot"><button className="file-actions-toggle" id="fileActionsToggle" type="button" aria-controls="fileActions" aria-expanded="false"><span className="dotst" id="stDot"></span><span className="file-actions-label">功能選單查看</span><i className="bi bi-chevron-up" aria-hidden="true" /></button></div>
   </aside>); }
 function DailyToolbar() { return (
   <section className="daily-workspace-bar" id="dailyControls" aria-label="每日心智圖專區" hidden>

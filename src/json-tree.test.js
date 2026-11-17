@@ -16,7 +16,9 @@ test('tree mode and original text survive archive serialization',()=>{
   const [map]=parseMaps(serializeMaps([{id:'m',title:'JSON',root:null,cards:[{id:'n',type:'note',x:0,y:0,text,jsonTree:true}]}]),()=>String(++id));
   assert.equal(map.cards[0].jsonTree,true);assert.equal(map.cards[0].text,text);
 });
-test('both JSON commands have visible rail entries and card toolbar actions',()=>{
-  const app=readFileSync(new URL('./App.jsx',import.meta.url),'utf8'),cards=readFileSync(new URL('./cards.js',import.meta.url),'utf8');
-  for(const action of ['jsonTree','formatJson']){assert.ok(app.includes(`data-ctx="${action}"`));assert.ok(cards.includes(`{cardAct:'${action}'}`));}
+test('JSON has its own rail card with tree, format and copy actions',()=>{
+  const cards=readFileSync(new URL('./cards.js',import.meta.url),'utf8');
+  assert.ok(cards.includes("['json','JSON',bi('braces')]"));
+  for(const action of ['jsonRaw','jsonFormat','jsonCopy'])assert.ok(cards.includes(`{cardAct:'${action}'}`));
+  assert.ok(cards.includes("box==='note' && (type==='board' || type==='json')"));
 });

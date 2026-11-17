@@ -268,6 +268,19 @@ test('page cards, note embeds and collapsed state follow their pages through an 
   assert.throws(() => parseMaps(JSON.stringify([{ ...map, cards:[{ type:'note', x:0, y:0, text:'', cards:[{ type:'link', url:'' }] }] }]), newId));
 });
 
+test('JSON cards survive an export on the canvas, inside columns and embedded in notes', () => {
+  const source = { ...map, cards:[
+    { id:'j', type:'json', x:1, y:2, title:'設定', text:'{"a":1}', raw:true },
+    { id:'c', type:'column', x:0, y:0, title:'欄', cards:[{ id:'j2', type:'json', text:'[1,2]' }] },
+    { id:'n', type:'note', x:0, y:0, text:'筆記', cards:[{ id:'j3', type:'json', text:'{"b":true}', collapsed:true }] },
+  ] };
+  const [restored] = parseMaps(serializeMaps([source]), newId);
+  const [json, column, note] = restored.cards;
+  assert.deepEqual([json.type, json.title, json.text, json.raw], ['json', '設定', '{"a":1}', true]);
+  assert.equal(column.cards[0].text, '[1,2]');
+  assert.deepEqual([note.cards[0].type, note.cards[0].text, note.cards[0].collapsed], ['json', '{"b":true}', true]);
+});
+
 test('file cards keep their attachment id and exports carry the file bodies', () => {
   const source = { ...map, cards:[{ id:'f1', type:'file', x:5, y:6, fileId:'f-abc123', kind:'pdf', name:'規格.pdf', size:2048 },
     { id:'c', type:'column', x:0, y:0, title:'欄', cards:[{ id:'f2', type:'file', fileId:'f-xyz', kind:'excel', name:'報表.xlsx', size:10 }] }] };

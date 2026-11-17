@@ -9,8 +9,8 @@ export function parseJsonTree(text,maxLength=10000){
   }
   return read();
 }
-export function renderJsonTree(text,onChange){
-  const root=parseJsonTree(text),container=document.createElement('div');container.className='json-tree';container.setAttribute('aria-label','JSON 樹狀檢視');
+export function renderJsonTree(text,onChange,maxLength){
+  const root=parseJsonTree(text,maxLength),container=document.createElement('div');container.className='json-tree';container.setAttribute('aria-label','JSON 樹狀檢視');
   for(const event of ['pointerdown','dblclick'])container.addEventListener(event,e=>e.stopPropagation());
   function build(node,key,open=false){
     const label=document.createElement('span');label.className='json-key';label.textContent=key===null?'':key+': ';

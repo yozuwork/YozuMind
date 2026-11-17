@@ -27,17 +27,20 @@ export function folderIcon(color, size=22) {
 export const FOLDER_ICON = folderIcon();
 // [type, label, icon html] in rail order; "mindmap" adds another mind-map tree to the board.
 export const RAIL_TOOLS = [
+  ['mindmap','心智圖',bi('diagram-3')],
   ['character','角色卡',bi('person-badge')],
-  ['note','筆記',bi('sticky')], ['link','連結',bi('link-45deg')], ['todo','待辦清單',bi('list-check')], ['column','欄位',bi('card-heading')],
-  ['mindmap','心智圖',bi('diagram-3')], ['board','獨立頁面',bi('folder')],
+  ['note','筆記',bi('sticky')], ['json','JSON',bi('braces')], ['link','連結',bi('link-45deg')], ['todo','待辦清單',bi('list-check')], ['column','欄位',bi('card-heading')],
+  ['board','獨立頁面',bi('folder')],
 ];
+// A JSON card keeps its raw source; it shows as a collapsible tree unless switched to the raw text.
+export const JSON_CARD_LIMIT = 100000;
 const TOOL_INFO = Object.fromEntries(RAIL_TOOLS.map(([type,label,icon])=>[type,{label,icon}]));
 // Where the pointer holds a wireframe piece dragged from the rail (screen px from its top-left).
 const WIRE_GRAB = 14;
 const CONTAINERS = ['column','folder'];
 // Content cards use a minimum height so resizing never cuts off their content.
-const SIZED = ['note','column','character','image'];
-const MIN_SIZE = {image:[24,24],board:[100,90], note:[140,48], column:[200,60], character:[200,280], wire:[24,20]};
+const SIZED = ['note','column','character','image','json'];
+const MIN_SIZE = {image:[24,24],board:[100,90], note:[140,48], json:[180,60], column:[200,60], character:[200,280], wire:[24,20]};
 // Wireframe pieces snap to this grid while dragged or resized; hold Alt for free placement.
 const WIRE_GRID = 8;
 const snap = (v, free) => free ? Math.round(v) : Math.round(v/WIRE_GRID)*WIRE_GRID;
@@ -93,7 +96,7 @@ function editorText(box) {
 }
 const nestable = type => !CONTAINERS.includes(type) && type!=='mindmap' && type!=='wire' && !wireTool(type);
 // Columns and folders take any nestable card; a note only embeds page cards.
-const accepts = (box, type) => CONTAINERS.includes(box) ? nestable(type) : box==='note' && type==='board';
+const accepts = (box, type) => CONTAINERS.includes(box) ? nestable(type) : box==='note' && (type==='board' || type==='json');
 
 const h = (tag, cls, text) => { const el=document.createElement(tag); if(cls) el.className=cls; if(text!=null) el.textContent=text; return el; };
 const icon = name => { const i=h('i','bi bi-'+name); i.setAttribute('aria-hidden','true'); return i; };
@@ -289,6 +292,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     const wire=wireTool(type); if(wire) return blankWire(wire, uid('c'));
     const card={id:uid('c'), type};
     if(type==='note') card.text='';
+    else if(type==='json') Object.assign(card,{title:'',text:''});
     else if(type==='link') Object.assign(card,{url:'',title:''});
     else if(type==='todo') Object.assign(card,{title:'',items:[{id:uid('i'),text:'',done:false}]});
     else if(type==='character') Object.assign(card,{title:'',todoIds:[]});
@@ -340,6 +344,13 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       }
       if(card.cards?.length && !card.collapsed) { const embeds=h('div','note-embeds'); for(const child of card.cards) embeds.append(build(child,true)); paper.append(embeds); }
       el.append(paper);
+    }
+    else if(card.type==='json') {
+      const head=h('div','json-card-head');
+      head.append(icon('braces'), edit ? field('input','json-title-input',card.title,'JSON 標題（選填）',{field:'title'}) : h('span','json-card-title'+(card.title?'':' ph'),card.title||'JSON'));
+      el.append(head);
+      if(edit) { const ta=field('textarea','json-input',card.text,'貼上或輸入 JSON，例如 {"name":"範例"}',{field:'text'}); ta.spellcheck=false; el.append(ta); }
+      else if(!card.collapsed) el.append(jsonCardBody(card));
     }
     else if(card.type==='board') {
       const info=pageInfo(card.mapId), tile=h('div','board-tile'), name=info?.title||card.title||'未命名頁面';
@@ -467,6 +478,11 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     const more=lines.length>1 || card.cards?.length;
     return h('div','note-text note-collapsed'+(first?'':' ph'),(first||'空白筆記')+(more?' …':''));
   }
+  function jsonCardBody(card) {
+    if(!card.text.trim()) return h('div','json-card-empty ph','空白 JSON，雙擊編輯');
+    if(!card.raw) { try { return renderJsonTree(card.text,onChange,JSON_CARD_LIMIT+12); } catch(error) { const box=h('div','json-card-raw'); box.append(h('div','json-card-error',error.message), h('pre','json-card-pre',card.text)); return box; } }
+    return h('pre','json-card-pre',card.text);
+  }
   function noteBody(card) {
     if(card.jsonTree){try{return renderJsonTree(card.text,onChange);}catch{/* Invalid edits remain visible as text. */}}
     if(!card.text) return card.title ? h('div','note-text note-empty') : h('div','note-text ph','空白筆記');
@@ -569,7 +585,8 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     if(host) {} // pinned to its node by design, no pin/unpin
     else if(card.anchor) bar.append(button('','取消掛載（不再跟著節點）',icon('pin-angle'),{cardAct:'detach'}));
     else if(pinStart && getMap().cards.includes(card)) bar.append(button('','掛到心智圖節點（再點選節點）',icon('pin-angle-fill'),{cardAct:'pin'}));
-    if(card.type==='note' || card.type==='column') bar.append(button('',card.collapsed?'展開':'收合',icon(card.collapsed?'arrows-expand':'arrows-collapse'),{cardAct:'collapse'}));
+    if(card.type==='json') bar.append(button('',card.raw?'樹狀檢視':'顯示原文',icon(card.raw?'diagram-3':'file-text'),{cardAct:'jsonRaw'}), button('','格式化 JSON',icon('braces'),{cardAct:'jsonFormat'}), button('','複製 JSON',icon('clipboard'),{cardAct:'jsonCopy'}));
+    if(card.type==='note' || card.type==='column' || card.type==='json') bar.append(button('',card.collapsed?'展開':'收合',icon(card.collapsed?'arrows-expand':'arrows-collapse'),{cardAct:'collapse'}));
     if(card.type==='folder') bar.append(button('',card.open?'收合':'開啟',icon(card.open?'folder2':'folder2-open'),{cardAct:'open'}));
     if(card.type==='note') bar.append(button('','加入待辦',icon('check2-square'),{cardAct:'todo'}), button('','插入程式碼',icon('code-slash'),{cardAct:'code'}), button('',`縮小文字（目前 ${card.fs||14}px）`,'A−',{cardAct:'fsDown'}), button('',`放大文字（目前 ${card.fs||14}px）`,'A+',{cardAct:'fsUp'}), button('','便利貼顏色',icon('palette'),{cardAct:'color'}));
     if(card.type==='file') bar.append(button('',card.kind==='pdf'?'開啟 PDF':'開啟（下載）',icon('box-arrow-up-right'),{cardAct:'fileOpen'}), button('','下載',icon('download'),{cardAct:'fileSave'}));
@@ -577,7 +594,8 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     if(card.type==='wire') bar.append(button('','建立副本',icon('copy'),{cardAct:'wireDup'}));
     if(card.type!=='image' && card.type!=='file') bar.append(button('','編輯',icon('pencil'),{cardAct:'edit'}));
     bar.append(button('','刪除',icon('trash'),{cardAct:'delete'}));
-    if(card.type==='note'&&!card.linkedOnly)bar.prepend(button('',card.jsonTree?'切回 JSON 原文':'JSON 樹狀檢視',icon('diagram-3'),{cardAct:'jsonTree'}),button('','格式化 JSON',icon('braces'),{cardAct:'formatJson'}));
+    // Older notes switched to the JSON tree keep a way back to their text; new JSON goes in a JSON card.
+    if(card.type==='note'&&!card.linkedOnly&&card.jsonTree)bar.prepend(button('','切回 JSON 原文',icon('diagram-3'),{cardAct:'jsonTree'}));
     return bar;
   }
   function render(force) {
@@ -601,7 +619,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
   function focusEditor(selector) {
     const el=cardEl(editing); if(!el) return;
     el.querySelectorAll('textarea:not(.code-input)').forEach(autosize);
-    const f=selector ? el.querySelector(selector) : [...el.querySelectorAll('.note-input')].at(-1) || el.querySelector('[data-field],[data-item]');
+    const f=selector ? el.querySelector(selector) : [...el.querySelectorAll('.note-input')].at(-1) || el.querySelector('.json-input') || el.querySelector('[data-field],[data-item]');
     if(f) { f.focus({preventScroll:true}); f.setSelectionRange?.(f.value.length,f.value.length); }
   }
 
@@ -874,6 +892,11 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     if(e.key==='Escape' || (e.key==='Enter' && (e.metaKey||e.ctrlKey))) { e.preventDefault(); commit(); canvas.focus({preventScroll:true}); return; }
     const loc=locate(getMap(),editing); if(!loc) return;
     if(loc.card.type==='wire') { if(e.key==='Enter' && f.tagName==='INPUT') { e.preventDefault(); commit(); canvas.focus({preventScroll:true}); } return; }
+    if(loc.card.type==='json') {
+      if(f.tagName==='TEXTAREA' && e.key==='Tab' && !e.shiftKey) { e.preventDefault(); f.setRangeText('  ',f.selectionStart,f.selectionEnd,'end'); loc.card.text=f.value; autosize(f); onChange(); }
+      else if(f.tagName==='INPUT' && e.key==='Enter') { e.preventDefault(); focusEditor('.json-input'); }
+      return;
+    }
     // Tab indents inside the note editor so code can be typed naturally.
     if(f.tagName==='TEXTAREA' && e.key==='Tab' && !e.shiftKey) {
       e.preventDefault(); f.setRangeText('  ',f.selectionStart,f.selectionEnd,'end'); syncNote(loc.card,f); return;
@@ -998,6 +1021,24 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       const ta=[...(cardEl(card.id)?.querySelectorAll('.note-input')||[])].at(-1); if(!ta) return;
       ta.value+=(ta.value && !ta.value.endsWith('\n') ? '\n' : '')+'[ ] '; if(ta.dataset.extra!==undefined) delete ta.dataset.extra;
       syncNote(card,ta); ta.focus(); ta.setSelectionRange(ta.value.length,ta.value.length);
+    }
+    else if(b.dataset.cardAct==='jsonRaw') {
+      if(card.type!=='json') return;
+      if(editing===card.id) commit();
+      if(card.raw) delete card.raw; else card.raw=true;
+      if(canEdit()) save(getMap().id); refresh();
+    }
+    else if(b.dataset.cardAct==='jsonFormat') {
+      if(card.type!=='json' || !canEdit()) return;
+      const source=editing===card.id ? (cardEl(card.id)?.querySelector('.json-input')?.value ?? card.text) : card.text;
+      let formatted; try { formatted=formatJsonNote(source,JSON_CARD_LIMIT+12).slice(8,-4); } catch(error) { toast(error.message.replace('筆記','卡片')); return; }
+      if(formatted===source) { toast('JSON 已經格式化。'); return; }
+      if(editing===card.id) commit();
+      snapshot(); card.text=formatted; save(getMap().id); refresh(); toast('JSON 已格式化，可用 Ctrl / ⌘ + Z 復原。');
+    }
+    else if(b.dataset.cardAct==='jsonCopy') {
+      if(card.type!=='json') return;
+      navigator.clipboard?.writeText(card.text).then(()=>toast('已複製 JSON'),()=>toast('無法存取剪貼簿'));
     }
     else if(b.dataset.cardAct==='jsonTree') {
       if(card.type!=='note'||card.linkedOnly)return;

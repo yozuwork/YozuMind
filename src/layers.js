@@ -1,4 +1,4 @@
-const cardTypes={wire:['線框元件','bounding-box'],note:['筆記','sticky'],image:['圖片卡','image'],character:['角色卡','person-badge'],todo:['待辦清單','list-check'],column:['欄位','layout-three-columns'],folder:['獨立頁面','folder2'],link:['連結','link-45deg'],file:['附件','paperclip']};
+const cardTypes={wire:['線框元件','bounding-box'],note:['筆記','sticky'],json:['JSON','braces'],image:['圖片卡','image'],character:['角色卡','person-badge'],todo:['待辦清單','list-check'],column:['欄位','layout-three-columns'],folder:['獨立頁面','folder2'],link:['連結','link-45deg'],file:['附件','paperclip']};
 export function canvasLayers(map){
   if(!map)return [];
   const result=[],stack=[];
