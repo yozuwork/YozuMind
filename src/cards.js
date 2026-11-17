@@ -8,6 +8,7 @@ import {listStagePresets,saveStagePreset,applyStagePreset,sameStageContent} from
 import {setupCharacterTodoDrawer} from './character-todo-drawer.js';
 import {setupCharacterPicker} from './character-picker.js';
 import { FILE_KINDS, MAX_ATTACHMENT_BYTES, fileKind, formatSize, getFile, putFile } from './attachments.js';
+import { ALIGNS, TEXT_COLORS, TEXT_STYLES, blankText, isTextTool, stepSize, textCss, textStyle } from './text-card.js';
 import { WIRE_EDIT_HINT, blankWire, installWireFilters, isWireFrame, renderWire, wireInfo, wireTool } from './wireframe.js';
 
 const bi = name => `<i class="bi bi-${name}" aria-hidden="true"></i>`;
@@ -29,6 +30,7 @@ export const FOLDER_ICON = folderIcon();
 export const RAIL_TOOLS = [
   ['mindmap','心智圖',bi('diagram-3')],
   ['character','角色卡',bi('person-badge')],
+  ['heading','標題',bi('type-h1')], ['text','內文',bi('text-paragraph')],
   ['note','筆記',bi('sticky')], ['json','JSON',bi('braces')], ['link','連結',bi('link-45deg')], ['todo','待辦清單',bi('list-check')], ['column','欄位',bi('card-heading')],
   ['board','獨立頁面',bi('folder')],
 ];
@@ -39,8 +41,8 @@ const TOOL_INFO = Object.fromEntries(RAIL_TOOLS.map(([type,label,icon])=>[type,{
 const WIRE_GRAB = 14;
 const CONTAINERS = ['column','folder'];
 // Content cards use a minimum height so resizing never cuts off their content.
-const SIZED = ['note','column','character','image','json'];
-const MIN_SIZE = {image:[24,24],board:[100,90], note:[140,48], json:[180,60], column:[200,60], character:[200,280], wire:[24,20]};
+const SIZED = ['note','column','character','image','json','text'];
+const MIN_SIZE = {image:[24,24],board:[100,90], note:[140,48], json:[180,60], column:[200,60], character:[200,280], wire:[24,20], text:[40,24]};
 // Wireframe pieces snap to this grid while dragged or resized; hold Alt for free placement.
 const WIRE_GRID = 8;
 const snap = (v, free) => free ? Math.round(v) : Math.round(v/WIRE_GRID)*WIRE_GRID;
@@ -290,6 +292,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
   const descendants = card => [card, ...(card.cards||[]).flatMap(descendants)];
   function blank(type) {
     const wire=wireTool(type); if(wire) return blankWire(wire, uid('c'));
+    if(isTextTool(type)) return blankText(uid('c'), type);
     const card={id:uid('c'), type};
     if(type==='note') card.text='';
     else if(type==='json') Object.assign(card,{title:'',text:''});
@@ -306,6 +309,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     if(card.type==='note') card.text=card.text.replace(/(\n?[ \t]*\[ \][ \t]*)+$/,'');
     if('title' in card) card.title=card.title.trim();
     if(card.type==='wire') card.text=String(card.text||'').replace(/\s+$/,'');
+    if(card.type==='text') card.text=String(card.text||'').replace(/\s+$/,'');
   }
 
   /* ---------- render ---------- */
@@ -360,6 +364,11 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       if(card.view==='row') { const text=h('div','board-text'); text.append(title,meta); el.append(tile,text); }
       else if(card.view==='icon') { el.title=name; el.append(tile); if(edit) el.append(title); }
       else el.append(tile,title,meta);
+    }
+    else if(card.type==='text') {
+      const css=textCss(card), label=textStyle(card.style).label;
+      const body=edit ? field('textarea','text-input',card.text,label,{field:'text'}) : h('div','text-body'+(card.text?'':' ph'),card.text||label);
+      Object.assign(body.style,css); el.append(body);
     }
     else if(card.type==='wire') {
       el.append(renderWire(card));
@@ -571,6 +580,24 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       }
       return bar;
     }
+    if(colorOpen===card.id && card.type==='text') {
+      bar.classList.add('colors');
+      bar.append(button('text-swatch'+(card.color?'':' on'),'自動（跟隨主題）','A',{textColor:'default'}));
+      for(const [k,[hex,name]] of Object.entries(TEXT_COLORS)) { const b=button('text-swatch'+(card.color===k?' on':''),name,'A',{textColor:k}); b.style.setProperty('--c',hex); bar.append(b); }
+      return bar;
+    }
+    if(card.type==='text') {
+      bar.classList.add('text-tools');
+      for(const [key,label] of TEXT_STYLES) bar.append(button('text-style'+((card.style||'body')===key?' on':''),label,key==='body'?'內文':key.toUpperCase(),{textStyle:key}));
+      bar.append(h('span','bar-sep'));
+      bar.append(button('text-fmt'+(card.bold?' on':''),'粗體','<b>B</b>',{cardAct:'textBold'}), button('text-fmt'+(card.italic?' on':''),'斜體','<i style="font-family:Georgia,serif">I</i>',{cardAct:'textItalic'}), button('text-fmt'+(card.underline?' on':''),'底線','<u>U</u>',{cardAct:'textUnderline'}));
+      const align=card.align||'left';
+      bar.append(button('','對齊：'+({left:'靠左',center:'置中',right:'靠右'})[align]+'（點一下切換）',icon('text-'+align),{cardAct:'textAlign'}));
+      const fs=card.fs||textStyle(card.style).fs;
+      bar.append(button('',`縮小文字（目前 ${fs}px）`,'A−',{cardAct:'textFsDown'}), button('',`放大文字（目前 ${fs}px）`,'A+',{cardAct:'textFsUp'}));
+      const pick=button('text-color-btn','文字顏色','A',{cardAct:'color'}); pick.style.setProperty('--c',TEXT_COLORS[card.color]?.[0]||'currentColor'); bar.append(pick);
+      bar.append(h('span','bar-sep'));
+    }
     if(colorOpen===card.id) {
       const board=card.type==='board', palette=board?FOLDER_COLORS:NOTE_COLORS, key=board?'boardColor':'noteColor';
       bar.classList.add('colors');
@@ -664,6 +691,8 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     const map=getMap(), loc=locate(map,id);
     if(loc) {
       tidy(loc.card);
+      // Like a word processor's text box, a text card left empty disappears.
+      if(loc.card.type==='text' && !loc.card.text) { loc.list.splice(loc.i,1); if(selected===id) selected=null; if(editFresh) dropSnapshot(); save(map.id); refresh(); return; }
       if(loc.card.type==='board') renamePage(loc.card.mapId, loc.card.title||'未命名頁面');
       if(!editFresh && JSON.stringify(loc.card)===editBefore) dropSnapshot(); else save(map.id);
     }
@@ -892,6 +921,7 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     if(e.key==='Escape' || (e.key==='Enter' && (e.metaKey||e.ctrlKey))) { e.preventDefault(); commit(); canvas.focus({preventScroll:true}); return; }
     const loc=locate(getMap(),editing); if(!loc) return;
     if(loc.card.type==='wire') { if(e.key==='Enter' && f.tagName==='INPUT') { e.preventDefault(); commit(); canvas.focus({preventScroll:true}); } return; }
+    if(loc.card.type==='text') return;
     if(loc.card.type==='json') {
       if(f.tagName==='TEXTAREA' && e.key==='Tab' && !e.shiftKey) { e.preventDefault(); f.setRangeText('  ',f.selectionStart,f.selectionEnd,'end'); loc.card.text=f.value; autosize(f); onChange(); }
       else if(f.tagName==='INPUT' && e.key==='Enter') { e.preventDefault(); focusEditor('.json-input'); }
@@ -987,6 +1017,24 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     }
     else if(b.dataset.head==='add-image') { pickFor=card.id; picker.value=''; picker.click(); }
     else if(b.dataset.cardAct==='color') { colorOpen=card.id; render(); }
+    else if(b.dataset.textStyle) {
+      if(card.style===b.dataset.textStyle && !card.fs) return;
+      snapshot(); card.style=b.dataset.textStyle; delete card.fs; save(map.id); refresh();
+    }
+    else if(['textBold','textItalic','textUnderline'].includes(b.dataset.cardAct)) {
+      const k=b.dataset.cardAct.slice(4).toLowerCase(); snapshot(); if(card[k]) delete card[k]; else card[k]=true; save(map.id); refresh();
+    }
+    else if(b.dataset.cardAct==='textAlign') {
+      const next=ALIGNS[(ALIGNS.indexOf(card.align||'left')+1)%ALIGNS.length]; snapshot(); if(next==='left') delete card.align; else card.align=next; save(map.id); refresh();
+    }
+    else if(b.dataset.cardAct==='textFsDown' || b.dataset.cardAct==='textFsUp') {
+      const next=stepSize(card, b.dataset.cardAct==='textFsUp'?1:-1); if(next===(card.fs||textStyle(card.style).fs)) return;
+      snapshot(); if(next===textStyle(card.style).fs) delete card.fs; else card.fs=next; save(map.id); refresh();
+    }
+    else if(b.dataset.textColor) {
+      snapshot(); if(b.dataset.textColor==='default') delete card.color; else card.color=b.dataset.textColor;
+      colorOpen=null; save(map.id); refresh();
+    }
     else if(b.dataset.cardAct==='fsDown' || b.dataset.cardAct==='fsUp') {
       // Note text size steps between 11 and 22 px; 14 px is the default and is not stored.
       const sizes=[11,12,13,14,16,18,20,22], i=sizes.indexOf(card.fs||14), next=sizes[Math.max(0,Math.min(sizes.length-1,i+(b.dataset.cardAct==='fsUp'?1:-1)))];

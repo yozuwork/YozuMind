@@ -1,3 +1,4 @@
+import { readTextCard } from './text-card.js';
 import { validDailyDate } from './daily.js';
 import {inboxMeta} from './inbox-state.js';
 import { isWireKind, wireInfo } from './wireframe.js';
@@ -115,7 +116,7 @@ export function parseMaps(text, newId) {
     return value;
   }
   function card(value, nested) {
-    if (!value || typeof value !== 'object' || !['note','json','link','todo','column','folder','image','board','file','character','wire'].includes(value.type) ||
+    if (!value || typeof value !== 'object' || !['note','json','link','todo','column','folder','image','board','file','character','wire','text'].includes(value.type) ||
         (nested && ['column','folder','wire'].includes(value.type)) || ++cardCount > 2000) {
       throw new Error('卡片格式不正確，或超過 2,000 張卡片。');
     }
@@ -185,6 +186,7 @@ export function parseMaps(text, newId) {
       result.src = value.src;
     }
     else if (value.type === 'link') Object.assign(result, { url: cardText(value.url, 2000), title: cardText(value.title, 1000) });
+    else if (value.type === 'text') readTextCard(value, result);
     else if (value.type === 'wire') {
       if (!isWireKind(value.kind)) throw new Error('線框元件格式不正確。');
       const size = wireInfo(value.kind);

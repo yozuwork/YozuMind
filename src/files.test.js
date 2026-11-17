@@ -317,3 +317,16 @@ test('wireframe components survive backup with kind, copy, size and state, and u
   assert.throws(()=>parseMaps(serializeMaps([{...map,cards:[{id:'x',type:'wire',kind:'marquee',x:0,y:0}]}]),newId));
   assert.throws(()=>parseMaps(serializeMaps([{...map,cards:[{id:'c',type:'column',x:0,y:0,cards:[{id:'w',type:'wire',kind:'button'}]}]}]),newId));
 });
+
+test('text cards keep their formatting through import and drop bad values',async()=>{
+  const {parseMaps}=await import('./files.js');
+  let n=0; const uid=p=>p+(++n);
+  const [map]=parseMaps(JSON.stringify({title:'t',root:{id:'r',text:'R',children:[]},cards:[
+    {id:'a',type:'text',x:10,y:20,text:'標題',style:'h1',fs:40,color:'red',bold:true,italic:true,underline:true,align:'center',w:300},
+    {id:'b',type:'text',x:0,y:0,text:'x',style:'nope',color:'#fff',bold:'yes',align:'left'},
+  ]}),uid);
+  const [a,b]=map.cards;
+  assert.equal(a.type,'text'); assert.equal(a.text,'標題'); assert.equal(a.style,'h1'); assert.equal(a.fs,40); assert.equal(a.color,'red');
+  assert.equal(a.bold,true); assert.equal(a.italic,true); assert.equal(a.underline,true); assert.equal(a.align,'center'); assert.equal(a.w,300);
+  assert.equal(b.style,'body'); assert.equal(b.color,undefined); assert.equal(b.bold,undefined); assert.equal(b.align,undefined);
+});

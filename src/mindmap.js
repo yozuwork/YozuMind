@@ -29,6 +29,7 @@ import {setupCharactersPage} from './characters-page.js';
 import {listStagePresets,importStagePresets,removeStagePresets} from './stage-presets.js';
 import {setupNotesPage} from './notes-page.js';
 import {setupRailMode} from './wireframe.js';
+import {setupExport} from './export.js';
 import {listNotes,cachedNote,importNotes,removeNotes,remapNoteLinks} from './notes.js';
 import {DEFAULT_WORKSPACE,WORKSPACES_KEY,activeWorkspaceId,workspaceOf,inWorkspace,uniqueWorkspaceName,validateWorkspaces,readWorkspaceState,persistWorkspaceState,archiveWorkspaces,selectArchiveWorkspace,setupWorkspaceMenu,chooseExportWorkspace,chooseImportWorkspace} from './workspaces.js';
 
@@ -2214,6 +2215,8 @@ listen($('shareBtn'), 'click', e=>{
   }
   showPop($('sharePop'), $('shareBtn'), 'right');
 });
+const exporter=setupExport({pop:$('sharePop'), world, canvas, getMap:cur, getBox:bbox, toast});
+disposers.push(()=>exporter.destroy());
 listen(document, 'pointerdown', e=>{ if(!e.target.closest('.pop') && !e.target.closest('[data-more],[data-folder-more]') && e.target!==$('crumbIcon') && !e.target.closest('#shareBtn')) closePops(); });
 
 /* zoom bar */
