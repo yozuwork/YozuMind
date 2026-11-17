@@ -9,6 +9,7 @@ import {setupCharacterTodoDrawer} from './character-todo-drawer.js';
 import {setupCharacterPicker} from './character-picker.js';
 import { FILE_KINDS, MAX_ATTACHMENT_BYTES, fileKind, formatSize, getFile, putFile } from './attachments.js';
 import { ALIGNS, TEXT_COLORS, TEXT_STYLES, blankText, isTextTool, stepSize, textCss, textStyle } from './text-card.js';
+import { WIRE_INLINE, WIRE_TEMPLATES } from './wireframe.js';
 import { WIRE_EDIT_HINT, blankWire, installWireFilters, isWireFrame, renderWire, wireInfo, wireTool } from './wireframe.js';
 
 const bi = name => `<i class="bi bi-${name}" aria-hidden="true"></i>`;
@@ -371,14 +372,24 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       Object.assign(body.style,css); el.append(body);
     }
     else if(card.type==='wire') {
-      el.append(renderWire(card));
+      const drawing=renderWire(card); el.append(drawing);
       if(edit) {
-        const info=wireInfo(card.kind), box=h('div','wire-editor'), multi=!!info.multi;
-        const part=wirePartEdit?.id===card.id?wirePartEdit:null;
-        const f=field(multi||part?'textarea':'input','wire-input',part?(card.parts?.[part.key]?.text??part.text):card.text,info.label+'文字',part?{wirePartField:part.key,field:'text'}:{field:'text'});
-        if(multi) f.rows=Math.min(8,Math.max(2,(card.text||'').split('\n').length));
-        box.append(h('span','wire-editor-label',info.label), f, h('span','wire-editor-hint',(WIRE_EDIT_HINT[card.kind]||(multi?'Enter 換行':'Enter 完成'))+' · Esc 完成'));
-        el.append(box);
+        const info=wireInfo(card.kind), multi=!!info.multi;
+        const part=wirePartEdit?.id===card.id&&WIRE_TEMPLATES.includes(card.kind)?wirePartEdit:null;
+        // The words are edited where they sit; pieces made of several lines (lists, tables…) use the editor box.
+        const target=part ? drawing.querySelector(`[data-wire-part="${part.key}"]`) : WIRE_INLINE[card.kind] && drawing.querySelector(WIRE_INLINE[card.kind]);
+        if(target) {
+          target.textContent=part ? (card.parts?.[part.key]?.text??part.text) : (card.text||'');
+          try { target.contentEditable='plaintext-only'; } catch { target.contentEditable='true'; }
+          target.spellcheck=false; target.setAttribute('role','textbox'); target.setAttribute('aria-label',info.label+'文字');
+          target.dataset.wireInline=part?part.key:''; target.dataset.ph=info.label; target.classList.add('wf-editing');
+        } else {
+          const box=h('div','wire-editor');
+          const f=field(multi?'textarea':'input','wire-input',card.text,info.label+'文字',{field:'text'});
+          if(multi) f.rows=Math.min(8,Math.max(2,(card.text||'').split('\n').length));
+          box.append(h('span','wire-editor-label',info.label), f, h('span','wire-editor-hint',(WIRE_EDIT_HINT[card.kind]||(multi?'Enter 換行':'Enter 完成'))+' · Esc 完成'));
+          el.append(box);
+        }
       }
     }
     else if(card.type==='file') {
@@ -646,8 +657,11 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
   function focusEditor(selector) {
     const el=cardEl(editing); if(!el) return;
     el.querySelectorAll('textarea:not(.code-input)').forEach(autosize);
-    const f=selector ? el.querySelector(selector) : [...el.querySelectorAll('.note-input')].at(-1) || el.querySelector('.json-input') || el.querySelector('[data-field],[data-item]');
-    if(f) { f.focus({preventScroll:true}); f.setSelectionRange?.(f.value.length,f.value.length); }
+    const f=selector ? el.querySelector(selector) : [...el.querySelectorAll('.note-input')].at(-1) || el.querySelector('.json-input') || el.querySelector('[data-field],[data-item],[data-wire-inline]');
+    if(!f) return;
+    f.focus({preventScroll:true});
+    if(f.isContentEditable) { const r=document.createRange(); r.selectNodeContents(f); r.collapse(false); const s=getSelection(); s.removeAllRanges(); s.addRange(r); }
+    else f.setSelectionRange?.(f.value.length,f.value.length);
   }
 
   /* ---------- edits ---------- */
@@ -746,7 +760,10 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       e.preventDefault();
       if(editing) commit();
       const card=locate(getMap(),id)?.card, key=part.dataset.wirePart, old=card.parts?.[key]||{};
-      wirePartDrag={id,key,pointer:e.pointerId,sx:e.clientX,sy:e.clientY,x:old.x||0,y:old.y||0,node:part,moved:false};
+      // A part may roam anywhere inside its card, never past the edge where it would be cut off.
+      const nr=part.getBoundingClientRect(), cr=el.getBoundingClientRect(), k=getView().k, lim=(a,b)=>a>b?[0,0]:[a,b];
+      wirePartDrag={id,key,pointer:e.pointerId,sx:e.clientX,sy:e.clientY,x:old.x||0,y:old.y||0,node:part,moved:false,
+        bx:lim((cr.left-nr.left)/k,(cr.right-nr.right)/k), by:lim((cr.top-nr.top)/k,(cr.bottom-nr.bottom)/k)};
       return;
     }
 
@@ -761,9 +778,11 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
       if(card?.type==='folder' && !card.open) toggleFolder(card); else if(card?.type==='board') openPageOf(card); else if(card?.type==='file') openFile(card,false);
       return;
     }
+    // Text edited in place takes clicks itself, so the caret lands where the pointer is.
+    if(editing===id && e.target.closest('[data-wire-inline]')) return;
     e.preventDefault();
     // Clicking a wireframe piece while its text is open keeps the caret in the editor.
-    if(editing===id && el.dataset.type==='wire') { el.querySelector('[data-field]')?.focus({preventScroll:true}); return; }
+    if(editing===id && el.dataset.type==='wire') { el.querySelector('[data-field],[data-wire-inline]')?.focus({preventScroll:true}); return; }
     canvas.focus({preventScroll:true});
     if(editing===id) return;
     if(editing) commit();
@@ -788,12 +807,13 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
   }
   on(window,'pointermove',e=>{
     if(wirePartDrag && e.pointerId===wirePartDrag.pointer) {
-      const d=wirePartDrag, dx=(e.clientX-d.sx)/getView().k, dy=(e.clientY-d.sy)/getView().k;
-      if(!d.moved && Math.hypot(dx,dy)<4) return;
+      const d=wirePartDrag, k=getView().k, rx=(e.clientX-d.sx)/k, ry=(e.clientY-d.sy)/k;
+      if(!d.moved && Math.hypot(rx,ry)<4) return;
+      const dx=Math.min(d.bx[1],Math.max(d.bx[0],rx)), dy=Math.min(d.by[1],Math.max(d.by[0],ry));
       if(!d.moved) { snapshot(); d.moved=true; }
       const card=locate(getMap(),d.id)?.card; if(!card) return;
       card.parts ||= {}; const part=card.parts[d.key] ||= {};
-      part.x=snap(d.x+dx,e.altKey); part.y=snap(d.y+dy,e.altKey);
+      part.x=Math.round(d.x+dx); part.y=Math.round(d.y+dy);
       d.node.style.translate=`${part.x}px ${part.y}px`; onChange(); return;
     }
 
@@ -902,6 +922,13 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
   /* ---------- inputs and buttons inside cards ---------- */
   on(layer,'input',e=>{
     const f=e.target, loc=locate(getMap(),f.closest('.card')?.dataset.id); if(!loc) return;
+    if(f.dataset.wireInline!==undefined && loc.card.type==='wire') {
+      const key=f.dataset.wireInline, multi=!key && wireInfo(loc.card.kind).multi;
+      let text=f.innerText.replace(/\n$/,''); if(!multi) text=text.replace(/\n/g,' ');
+      if(key) { loc.card.parts ||= {}; (loc.card.parts[key] ||= {}).text=text; }
+      else { loc.card.text=text; delete loc.card.parts; }
+      onChange(); return;
+    }
     if(f.dataset.wirePartField!==undefined && loc.card.type==='wire') {
       loc.card.parts ||= {}; const part=loc.card.parts[f.dataset.wirePartField] ||= {};
       part.text=f.value;
@@ -920,7 +947,12 @@ export function setupCards({ canvas, world, rail, getMap, getMaps, locateTodo, g
     const f=e.target;
     if(e.key==='Escape' || (e.key==='Enter' && (e.metaKey||e.ctrlKey))) { e.preventDefault(); commit(); canvas.focus({preventScroll:true}); return; }
     const loc=locate(getMap(),editing); if(!loc) return;
-    if(loc.card.type==='wire') { if(e.key==='Enter' && f.tagName==='INPUT') { e.preventDefault(); commit(); canvas.focus({preventScroll:true}); } return; }
+    if(loc.card.type==='wire') {
+      // Enter finishes single-line text; a paragraph takes new lines, finished with Esc or Ctrl+Enter.
+      const inline=f.dataset.wireInline!==undefined, multiline=inline && !f.dataset.wireInline && wireInfo(loc.card.kind).multi;
+      if(e.key==='Enter' && !e.shiftKey && (f.tagName==='INPUT' || (inline && !multiline))) { e.preventDefault(); commit(); canvas.focus({preventScroll:true}); }
+      return;
+    }
     if(loc.card.type==='text') return;
     if(loc.card.type==='json') {
       if(f.tagName==='TEXTAREA' && e.key==='Tab' && !e.shiftKey) { e.preventDefault(); f.setRangeText('  ',f.selectionStart,f.selectionEnd,'end'); loc.card.text=f.value; autosize(f); onChange(); }

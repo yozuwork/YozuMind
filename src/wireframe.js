@@ -47,6 +47,14 @@ export function blankWire(kind, id) {
   const i=wireInfo(kind);
   return {id, type:'wire', kind:i.kind, text:i.text, w:i.w, h:i.h, ...(['checkbox','radio','toggle'].includes(i.kind)?{on:true}:{})};
 }
+// Card templates are built from several parts that can each be dragged and edited on their own.
+export const WIRE_TEMPLATES = ['music-card','manga-card','basic-card'];
+// Pieces whose words sit in one element are edited right there on the canvas: kind → that element.
+export const WIRE_INLINE = {
+  heading:'.wf-heading', text:'.wf-text', button:'.wf-clip', 'btn-outline':'.wf-clip', 'btn-text':'.wf-btn-text', 'btn-pill':'.wf-clip',
+  'btn-icon':'.wf-clip', 'btn-split':'.wf-value', input:'.wf-ph', search:'.wf-ph', dropdown:'.wf-value',
+  checkbox:'.wf-label', radio:'.wf-label', toggle:'.wf-label', panel:'.wf-panel-head', window:'.wf-url .wf-clip', image:'.wf-cap',
+};
 export const WIRE_EDIT_HINT = {
   navbar:'每行一項，第一行是品牌名稱', tabs:'每行一個分頁，第一個為目前分頁', list:'每行一個選項，第一個會標示為選取',
   table:'每行一列，用 | 分隔欄位；第一列是表頭（可直接貼上試算表）', image:'圖片說明，留空時顯示尺寸', window:'網址或視窗標題',
@@ -175,11 +183,14 @@ export function renderWire(card) {
   }
   // Stable part keys keep edits and positions through redraws and persistence.
   const selector='.wf-template > div,.wf-clip,.wf-heading,.wf-text,.wf-panel-head,.wf-brand b,.wf-cap,.wf-label,.wf-mark,.wf-avatar,.wf-track,.wf-logo,.wf-menu,.wf-dots,.wf-cells > span';
+  // Only template parts move on their own; a single piece always moves as a whole, so older offsets are ignored.
+  const template=WIRE_TEMPLATES.includes(card.kind);
   [...body.querySelectorAll(selector)].filter(n=>!n.querySelector(selector)).forEach((node,index)=>{
     const key=String(index), part=card.parts?.[key];
+    if(part?.text!==undefined) node.textContent=part.text;
+    if(!template) return;
     node.dataset.wirePart=key;
     node.title='拖曳移動 · 點兩下編輯';
-    if(part?.text!==undefined) node.textContent=part.text;
     if(part) node.style.translate=`${part.x||0}px ${part.y||0}px`;
   });
   return body;

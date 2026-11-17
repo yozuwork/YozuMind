@@ -215,3 +215,8 @@
   .rail-set,.wf-ghost .wf-body,.wire-editor{animation:none}
   .rail-mode-thumb,.wf-mark,.wf-tick path,.wf-knob{transition:none}
 }
+
+/* Text edited in place on the canvas */
+.wf-editing{cursor:text;user-select:text;-webkit-user-select:text;outline:none;overflow:visible !important;text-overflow:clip !important;caret-color:var(--accent);min-width:1ch}
+.wf-editing:empty::before{content:attr(data-ph);opacity:.4}
+.wf-heading.wf-editing,.wf-clip.wf-editing{white-space:pre}
